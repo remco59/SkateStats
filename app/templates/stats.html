@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1>Statistieken</h1>
+  </div>
+
+  <section class="card">
+    <form method="get" action="/stats" class="form">
+      <div class="grid2">
+        <label>Seizoen
+          <select name="season">
+            <option value="">Alle seizoenen</option>
+            {% for season_label in season_options %}
+              <option value="{{ season_label }}" {% if selected_season == season_label %}selected{% endif %}>{{ season_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>Afstand
+          <select name="distance_m">
+            <option value="">Alle afstanden</option>
+            {% for distance in distance_options %}
+              <option value="{{ distance }}" {% if selected_distance == (distance|string) %}selected{% endif %}>{{ distance }}m</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div class="row-actions">
+        <button type="submit">Toepassen</button>
+        <a class="btn" href="/stats">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="grid3">
+      <div class="stat">
+        <div class="label">Wedstrijden</div>
+        <div class="value mono">{{ stats_summary.competition_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Ritten met tijd</div>
+        <div class="value mono">{{ stats_summary.race_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Afstanden</div>
+        <div class="value mono">{{ stats_summary.distance_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">PR's</div>
+        <div class="value mono">{{ stats_summary.pr_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Ritten met splits</div>
+        <div class="value mono">{{ stats_summary.split_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Favoriete locatie</div>
+        <div class="value mono">{{ stats_summary.favorite_venue }}</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Per seizoen</h2>
+      {% if season_summaries|length == 0 %}
+        <p>Nog geen seizoensdata beschikbaar.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr><th>Seizoen</th><th>Wedstrijden</th><th>Ritten</th><th>Afstanden</th><th>PR's</th><th>Met splits</th><th>Favoriete locatie</th></tr>
+          </thead>
+          <tbody>
+            {% for season_row in season_summaries %}
+              <tr>
+                <td class="mono">{{ season_row.label }}</td>
+                <td class="mono">{{ season_row.competition_count }}</td>
+                <td class="mono">{{ season_row.race_count }}</td>
+                <td class="mono">{{ season_row.distance_count }}</td>
+                <td class="mono">{{ season_row.pr_count }}</td>
+                <td class="mono">{{ season_row.split_count }}</td>
+                <td>{{ season_row.favorite_venue }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Per afstand</h2>
+      {% if distance_stats|length == 0 %}
+        <p>Geen afstandsstatistieken gevonden voor deze filters.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr>
+              <th>Afstand</th>
+              <th>Ritten</th>
+              <th>PR's</th>
+              <th>Beste tijd</th>
+              <th>Gem.</th>
+              <th>Laatste</th>
+              <th>Opening</th>
+              <th>Laatste 400-eq</th>
+              <th>Gem. 400-eq</th>
+              <th>Verval</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for stat in distance_stats %}
+              <tr>
+                <td class="mono">{{ stat.distance_m }}m</td>
+                <td class="mono">{{ stat.count }}</td>
+                <td class="mono">{{ stat.pr_count }}</td>
+                <td class="mono"><a href="/races/{{ stat.best_time_race_id }}">{{ fmt_ms(stat.best_time_ms) }}</a></td>
+                <td class="mono">{{ fmt_ms(stat.avg_time_ms) }}</td>
+                <td class="mono"><a href="/races/{{ stat.latest_race_id }}">{{ fmt_ms(stat.latest_time_ms) }}</a></td>
+                <td class="mono">
+                  {% if stat.split_race_count > 0 %}
+                    {{ stat.opening_m }}m: {{ fmt_sec(stat.avg_opening_s) }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td class="mono">{{ fmt_sec(stat.avg_last_400_s) }}</td>
+                <td class="mono">{{ fmt_sec(stat.avg_400_s) }}</td>
+                <td class="mono">{{ fmt_sec(stat.avg_fade_s) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  </div>
+
+  {% if distance_stats|length > 0 %}
+    <section class="card">
+      <h2>Splitdetails per afstand</h2>
+      <div class="trend-list">
+        {% for stat in distance_stats %}
+          <div class="trend-item">
+            <div class="row">
+              <strong class="mono">{{ stat.distance_m }}m</strong>
+              <span class="muted">{{ stat.count }} ritten, {{ stat.split_race_count }} met splits</span>
+            </div>
+            <table>
+              <tbody>
+                <tr>
+                  <th>Beste tijd</th>
+                  <td class="mono"><a href="/races/{{ stat.best_time_race_id }}">{{ fmt_ms(stat.best_time_ms) }}</a> op {{ fmt_date(stat.best_time_date) }}</td>
+                </tr>
+                <tr>
+                  <th>Laatste tijd</th>
+                  <td class="mono"><a href="/races/{{ stat.latest_race_id }}">{{ fmt_ms(stat.latest_time_ms) }}</a> op {{ fmt_date(stat.latest_date) }}</td>
+                </tr>
+                <tr>
+                  <th>Gem. opening</th>
+                  <td class="mono">{{ stat.opening_m }}m: {{ fmt_sec(stat.avg_opening_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Beste opening</th>
+                  <td class="mono">{{ stat.opening_m }}m: {{ fmt_sec(stat.best_opening_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Gem. laatste 400-eq</th>
+                  <td class="mono">{{ fmt_sec(stat.avg_last_400_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Beste laatste 400-eq</th>
+                  <td class="mono">{{ fmt_sec(stat.best_last_400_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Gem. 400-eq</th>
+                  <td class="mono">{{ fmt_sec(stat.avg_400_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Gem. verval</th>
+                  <td class="mono">{{ fmt_sec(stat.avg_fade_s) }}</td>
+                </tr>
+                <tr>
+                  <th>Gem. aantal splits</th>
+                  <td class="mono">{{ "%.1f"|format(stat.avg_segments) if stat.avg_segments is not none else "-" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

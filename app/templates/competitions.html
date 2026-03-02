@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <h1>Wedstrijden</h1>
+    <div class="page-actions">
+      <a class="btn" href="/competitions/new">Nieuwe wedstrijd</a>
+      <button
+        type="button"
+        class="btn btn-secondary"
+        id="competition-filters-toggle"
+        aria-expanded="{% if filters_open %}true{% else %}false{% endif %}"
+        aria-controls="competition-filters-panel"
+      >
+        Filters
+      </button>
+    </div>
+  </div>
+
+  {% if error_message %}
+    <section class="card">
+      <div class="hint" style="color:#ffb86b;">{{ error_message }}</div>
+    </section>
+  {% endif %}
+
+  <section class="card" id="competition-filters-panel" {% if not filters_open %}hidden{% endif %}>
+    <form method="get" action="/competitions" class="form">
+      <label>Locatie
+        <select name="venue">
+          <option value="">Alle locaties</option>
+          {% for venue_row in venue_options %}
+            <option value="{{ venue_row.venue }}" {% if selected_venue == venue_row.venue %}selected{% endif %}>{{ venue_row.venue }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="grid2">
+        <label>Datum vanaf
+          <div class="date-input">
+            <input class="date-input-text" name="date_from" value="{{ selected_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+            <input class="date-input-picker" type="date" value="{{ selected_date_from }}" tabindex="-1" aria-hidden="true" />
+            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+          </div>
+        </label>
+
+        <label>Datum t/m
+          <div class="date-input">
+            <input class="date-input-text" name="date_to" value="{{ selected_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+            <input class="date-input-picker" type="date" value="{{ selected_date_to }}" tabindex="-1" aria-hidden="true" />
+            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+          </div>
+        </label>
+      </div>
+
+      <div class="row-actions">
+        <button type="submit">Filteren</button>
+        <a class="btn" href="/competitions">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    {% if comps|length == 0 %}
+      <p>Geen wedstrijden gevonden.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr><th>Datum</th><th>Naam</th><th>Locatie</th></tr>
+        </thead>
+        <tbody>
+          {% for c in comps %}
+            <tr>
+              <td class="mono">{{ fmt_date(c.competition_date) }}</td>
+              <td><a href="/competitions/{{ c.id }}">{{ c.name }}</a></td>
+              <td>{{ c.venue or "-" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+
+  <script>
+    (function () {
+      const toggle = document.getElementById("competition-filters-toggle");
+      const panel = document.getElementById("competition-filters-panel");
+
+      if (!toggle || !panel) {
+        return;
+      }
+
+      toggle.addEventListener("click", () => {
+        const open = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", open ? "false" : "true");
+        panel.hidden = open;
+      });
+    })();
+  </script>
+{% endblock %}

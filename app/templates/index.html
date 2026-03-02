@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Overzicht</h1>
+
+  <section class="card">
+    <div class="grid3">
+      <div class="stat">
+        <div class="label">Aantal wedstrijden</div>
+        <div class="value mono">{{ competition_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Aantal ritten</div>
+        <div class="value mono">{{ race_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Aantal PR's</div>
+        <div class="value mono">{{ pr_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Favoriete locatie</div>
+        <div class="value mono">{{ favorite_venue }}</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Beste tijden per afstand</h2>
+      {% if best_times|length == 0 %}
+        <p>Nog geen geldige tijden beschikbaar.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr><th>Afstand</th><th>Beste tijd</th><th>Datum</th></tr>
+          </thead>
+          <tbody>
+            {% for r in best_times %}
+              <tr>
+                <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
+                <td class="mono">{{ fmt_ms(r.total_time_ms) }}</td>
+                <td class="mono">{{ fmt_date(r.competition_date) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Laatste wedstrijden</h2>
+      {% if comps|length == 0 %}
+        <p>Nog geen wedstrijden. Voeg er een toe bij <a href="/competitions">Wedstrijden</a>.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr><th>Naam</th><th>Locatie</th><th>Datum</th></tr>
+          </thead>
+          <tbody>
+            {% for c in comps %}
+              <tr>
+                <td><a href="/competitions/{{ c.id }}">{{ c.name }}</a></td>
+                <td>{{ c.venue or "-" }}</td>
+                <td class="mono">{{ fmt_date(c.competition_date) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Recente tijden</h2>
+      {% if recent_races|length == 0 %}
+        <p>Nog geen tijden. Voeg je eerste toe via <a href="/races/new">Nieuwe tijd</a>.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr><th>Afstand</th><th>Tijd</th><th>Datum</th></tr>
+          </thead>
+          <tbody>
+            {% for r in recent_races %}
+              <tr>
+                <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
+                <td class="mono">
+                  {{ fmt_ms(r.total_time_ms) }}{% if r.dnf == 1 %} (DNF){% endif %}
+                  {% if r.is_pr %}
+                    <span class="badge-pr">PR</span>
+                  {% endif %}
+                </td>
+                <td class="mono">{{ fmt_date(r.competition_date) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <details class="trend-filters-shell" {% if trend_filters_open %}open{% endif %}>
+        <summary class="section-header trend-filters-summary">
+          <h2>Ontwikkeling per afstand</h2>
+          <span class="btn-icon" aria-hidden="true">&#x1F5D0;</span>
+        </summary>
+        {% if trend_error_message %}
+          <div class="hint" style="color:#ffb86b; margin-bottom:10px;">{{ trend_error_message }}</div>
+        {% endif %}
+        <form method="get" action="/" class="form trend-filter-form" id="trend-filters-panel">
+          <label>Periode
+            <select name="trend_period" id="trend_period">
+              <option value="month" {% if selected_trend_period == "month" %}selected{% endif %}>Afgelopen maand</option>
+              <option value="season" {% if selected_trend_period == "season" %}selected{% endif %}>Seizoen</option>
+              <option value="custom" {% if selected_trend_period == "custom" %}selected{% endif %}>Custom datumbereik</option>
+            </select>
+          </label>
+
+          <div class="grid2" id="trend-custom-range" {% if selected_trend_period != "custom" %}hidden{% endif %}>
+            <label>Datum vanaf
+              <div class="date-input">
+                <input class="date-input-text" name="trend_date_from" value="{{ selected_trend_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+                <input class="date-input-picker" type="date" value="{{ selected_trend_date_from }}" tabindex="-1" aria-hidden="true" />
+                <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+              </div>
+            </label>
+            <label>Datum t/m
+              <div class="date-input">
+                <input class="date-input-text" name="trend_date_to" value="{{ selected_trend_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+                <input class="date-input-picker" type="date" value="{{ selected_trend_date_to }}" tabindex="-1" aria-hidden="true" />
+                <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="row-actions">
+            <button type="submit">Toepassen</button>
+          </div>
+        </form>
+      </details>
+      <p class="muted">Periode: {{ trend_filter_label }}</p>
+      {% if trend_rows|length == 0 %}
+        <p>Nog onvoldoende data voor grafieken.</p>
+      {% else %}
+        <div class="trend-list">
+          {% for trend in trend_rows %}
+            <div class="trend-item">
+              <div class="row">
+                <strong class="mono">{{ trend.distance_m }}m</strong>
+              </div>
+              {% if trend.sparkline %}
+                <div class="sparkline-wrap">
+                  <svg class="sparkline js-sparkline" viewBox="0 0 {{ trend.sparkline.width }} {{ trend.sparkline.height }}" preserveAspectRatio="xMidYMid meet" data-distance="{{ trend.distance_m }}m">
+                    <line
+                      x1="{{ trend.sparkline.left_padding }}"
+                      y1="{{ trend.sparkline.baseline_y }}"
+                      x2="{{ trend.sparkline.width - trend.sparkline.right_padding }}"
+                      y2="{{ trend.sparkline.baseline_y }}"
+                      class="sparkline-axis"
+                    ></line>
+                    {% for tick in trend.sparkline.month_ticks %}
+                      <line
+                        x1="{{ tick.x }}"
+                        y1="{{ trend.sparkline.baseline_y }}"
+                        x2="{{ tick.x }}"
+                        y2="{{ trend.sparkline.baseline_y + 5 }}"
+                        class="sparkline-axis"
+                      ></line>
+                      <text x="{{ tick.x }}" y="{{ trend.sparkline.baseline_y + 16 }}" class="sparkline-label">{{ tick.label }}</text>
+                    {% endfor %}
+                    <polyline points="{{ trend.sparkline.points }}" />
+                    {% for point in trend.sparkline.circles %}
+                      <circle
+                        cx="{{ point.x }}"
+                        cy="{{ point.y }}"
+                        r="4.5"
+                        data-date="{{ point.tooltip_date }}"
+                        data-name="{{ point.tooltip_name }}"
+                        data-time="{{ point.tooltip_time }}"
+                        data-distance="{{ trend.distance_m }}m"
+                        data-count="{{ point.tooltip_count }}"
+                        data-href="{{ point.href }}"
+                      ></circle>
+                    {% endfor %}
+                  </svg>
+                  <div class="chart-tooltip" hidden>
+                    <div class="chart-tooltip-distance"></div>
+                    <div class="chart-tooltip-time"></div>
+                    <div class="chart-tooltip-name"></div>
+                    <div class="chart-tooltip-date"></div>
+                    <div class="chart-tooltip-count"></div>
+                    <a class="chart-tooltip-link" href="#">Open rit</a>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const sparklineWraps = document.querySelectorAll(".sparkline-wrap");
+      const trendPeriod = document.getElementById("trend_period");
+      const trendCustomRange = document.getElementById("trend-custom-range");
+
+      if (trendPeriod && trendCustomRange) {
+        function syncTrendRange() {
+          trendCustomRange.hidden = trendPeriod.value !== "custom";
+        }
+
+        trendPeriod.addEventListener("change", syncTrendRange);
+        syncTrendRange();
+      }
+
+      sparklineWraps.forEach((wrap) => {
+        const tooltip = wrap.querySelector(".chart-tooltip");
+        const svg = wrap.querySelector(".js-sparkline");
+        const circles = Array.from(wrap.querySelectorAll("circle"));
+        const distanceEl = tooltip ? tooltip.querySelector(".chart-tooltip-distance") : null;
+        const timeEl = tooltip ? tooltip.querySelector(".chart-tooltip-time") : null;
+        const nameEl = tooltip ? tooltip.querySelector(".chart-tooltip-name") : null;
+        const dateEl = tooltip ? tooltip.querySelector(".chart-tooltip-date") : null;
+        const countEl = tooltip ? tooltip.querySelector(".chart-tooltip-count") : null;
+        const linkEl = tooltip ? tooltip.querySelector(".chart-tooltip-link") : null;
+        const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+        let activeCircle = null;
+
+        if (!tooltip || !svg || !distanceEl || !timeEl || !nameEl || !dateEl || !countEl || !linkEl) {
+          return;
+        }
+
+        function positionTooltip(circle) {
+          const wrapRect = wrap.getBoundingClientRect();
+          const circleRect = circle.getBoundingClientRect();
+          const tooltipWidth = tooltip.offsetWidth || 180;
+          const tooltipHeight = tooltip.offsetHeight || 120;
+          const centerX = circleRect.left - wrapRect.left + (circleRect.width / 2);
+          const left = Math.min(Math.max(centerX - (tooltipWidth / 2), 8), wrapRect.width - tooltipWidth - 8);
+          const top = Math.max(circleRect.top - wrapRect.top - tooltipHeight - 12, 8);
+          tooltip.style.left = left + "px";
+          tooltip.style.top = top + "px";
+        }
+
+        function showTooltip(circle) {
+          if (activeCircle && activeCircle !== circle) {
+            activeCircle.classList.remove("is-active");
+          }
+          activeCircle = circle;
+          wrap.classList.add("is-active");
+          circle.classList.add("is-active");
+          distanceEl.textContent = circle.dataset.distance || "";
+          timeEl.textContent = circle.dataset.time || "";
+          nameEl.textContent = circle.dataset.name || "";
+          dateEl.textContent = circle.dataset.date || "";
+          countEl.textContent = `Wedstrijden: ${circle.dataset.count || ""}`;
+          linkEl.href = circle.dataset.href || "#";
+          tooltip.hidden = false;
+          positionTooltip(circle);
+        }
+
+        function hideTooltip() {
+          tooltip.hidden = true;
+          wrap.classList.remove("is-active");
+          if (activeCircle) {
+            activeCircle.classList.remove("is-active");
+            activeCircle = null;
+          }
+        }
+
+        circles.forEach((circle) => {
+          circle.addEventListener("mouseenter", () => {
+            if (isCoarsePointer) {
+              return;
+            }
+            showTooltip(circle);
+          });
+
+          circle.addEventListener("click", (event) => {
+            if (!isCoarsePointer) {
+              return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            showTooltip(circle);
+          });
+        });
+
+        svg.addEventListener("click", (event) => {
+          if (!isCoarsePointer) {
+            return;
+          }
+
+          const svgRect = svg.getBoundingClientRect();
+          const clickX = event.clientX - svgRect.left;
+          const clickY = event.clientY - svgRect.top;
+          let closestCircle = null;
+          let closestDistance = Number.POSITIVE_INFINITY;
+
+          circles.forEach((circle) => {
+            const circleX = (parseFloat(circle.getAttribute("cx")) / svg.viewBox.baseVal.width) * svgRect.width;
+            const circleY = (parseFloat(circle.getAttribute("cy")) / svg.viewBox.baseVal.height) * svgRect.height;
+            const distance = Math.hypot(circleX - clickX, circleY - clickY);
+            if (distance < closestDistance) {
+              closestDistance = distance;
+              closestCircle = circle;
+            }
+          });
+
+          if (closestCircle) {
+            event.preventDefault();
+            showTooltip(closestCircle);
+          }
+        });
+
+        if (!isCoarsePointer) {
+          wrap.addEventListener("mouseleave", hideTooltip);
+        }
+
+        document.addEventListener("click", (event) => {
+          if (!wrap.contains(event.target)) {
+            hideTooltip();
+          }
+        });
+      });
+    })();
+  </script>
+{% endblock %}

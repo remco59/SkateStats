@@ -1,0 +1,7 @@
+services:
+  skatestats:
+    labels:
+      net.unraid.docker.managed: 'composeman'
+      net.unraid.docker.icon: ''
+      net.unraid.docker.webui: ''
+      net.unraid.docker.shell: ''

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Importeer uitslag-PDF</h1>
+
+  <section class="card">
+    <p class="muted">
+      Upload een uitslag in PDF-formaat. De import zoekt alle ritten voor de opgegeven naam
+      en importeert meerdere ritten uit dezelfde uitslag automatisch.
+    </p>
+  </section>
+
+  {% if error_message %}
+    <section class="card">
+      <div class="hint" style="color:#ffb86b;">{{ error_message }}</div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <form method="post" action="/import/pdf" enctype="multipart/form-data" class="form">
+      <label>Naam om op te matchen
+        <input name="owner_name" value="{{ upload_owner_name }}" required />
+        <span class="hint">Standaard is dit de huidige owner, maar je kunt dit hier aanpassen voor de upload.</span>
+      </label>
+
+      <div class="grid2">
+        <label>Wedstrijdnaam (optioneel)
+          <input name="competition_name" value="{{ upload_competition_name }}" placeholder="Leeg laten om uit PDF te halen" />
+        </label>
+        <label>Locatie (optioneel)
+          <input name="competition_venue" value="{{ upload_competition_venue }}" placeholder="Leeg laten om uit PDF te halen" />
+        </label>
+      </div>
+
+      <label>Wedstrijddatum (optioneel)
+        <div class="date-input">
+          <input class="date-input-text" name="competition_date" value="{{ upload_competition_date|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+          <input class="date-input-picker" type="date" value="{{ upload_competition_date }}" tabindex="-1" aria-hidden="true" />
+          <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+        </div>
+        <span class="hint">Alleen invullen als de parser de datum niet betrouwbaar uit de PDF kan halen.</span>
+      </label>
+
+      <label>Uitslag-PDF
+        <input type="file" name="file" accept="application/pdf,.pdf" required />
+        <span class="hint">De parser zoekt binnen de hele uitslag naar alle regels met deze naam en een eindtijd.</span>
+      </label>
+
+      <button type="submit">Importeren</button>
+    </form>
+  </section>
+{% endblock %}

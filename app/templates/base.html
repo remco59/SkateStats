@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>{{ app_title }}</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="alternate icon" href="/static/favicon.svg">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <a href="/">{{ app_title }}</a>
+        <span class="tag">owner: {{ owner_name }}</span>
+      </div>
+      <nav class="nav-desktop">
+        <a href="/stats">Statistieken</a>
+        <a href="/competitions">Wedstrijden</a>
+        <a href="/races">Ritten</a>
+        <a href="/import/pdf">Importeren</a>
+      </nav>
+      <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </header>
+
+    <nav id="mobile-nav" class="nav-mobile" hidden>
+      <a href="/stats">Statistieken</a>
+      <a href="/competitions">Wedstrijden</a>
+      <a href="/races">Ritten</a>
+      <a href="/import/pdf">Importeren</a>
+    </nav>
+
+    <main class="container">
+      {% block content %}{% endblock %}
+    </main>
+
+    <div class="fab-menu" data-open="false">
+      <div class="fab-actions">
+        <a class="fab-action" href="/competitions/new">Wedstrijd toevoegen</a>
+        <a class="fab-action" href="/races/new">Tijd toevoegen</a>
+      </div>
+      <button type="button" class="fab-toggle" aria-label="Snelle acties" aria-expanded="false">+</button>
+    </div>
+
+    <footer class="footer">
+      <span>SkateStats • Copyright 2026</span>
+    </footer>
+
+    <script>
+      (function () {
+        document.querySelectorAll(".date-input").forEach((wrapper) => {
+          const textInput = wrapper.querySelector(".date-input-text");
+          const pickerInput = wrapper.querySelector(".date-input-picker");
+          const trigger = wrapper.querySelector(".date-input-trigger");
+
+          if (!textInput || !pickerInput || !trigger) {
+            return;
+          }
+
+          function isoToDisplay(value) {
+            if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+              return value || "";
+            }
+            const [year, month, day] = value.split("-");
+            return `${day}/${month}/${year}`;
+          }
+
+          function displayToIso(value) {
+            const raw = (value || "").trim();
+            if (!raw) {
+              return "";
+            }
+            if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+              return raw;
+            }
+            const match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+            if (!match) {
+              return "";
+            }
+            const day = match[1].padStart(2, "0");
+            const month = match[2].padStart(2, "0");
+            const year = match[3];
+            return `${year}-${month}-${day}`;
+          }
+
+          if (!textInput.value && pickerInput.value) {
+            textInput.value = isoToDisplay(pickerInput.value);
+          }
+
+          trigger.addEventListener("click", () => {
+            if (typeof pickerInput.showPicker === "function") {
+              pickerInput.showPicker();
+            } else {
+              pickerInput.focus();
+              pickerInput.click();
+            }
+          });
+
+          pickerInput.addEventListener("change", () => {
+            textInput.value = isoToDisplay(pickerInput.value);
+          });
+
+          textInput.addEventListener("blur", () => {
+            const isoValue = displayToIso(textInput.value);
+            if (isoValue) {
+              pickerInput.value = isoValue;
+              textInput.value = isoToDisplay(isoValue);
+            }
+          });
+        });
+
+        const navToggle = document.querySelector(".nav-toggle");
+        const mobileNav = document.getElementById("mobile-nav");
+        const fabMenu = document.querySelector(".fab-menu");
+        const fabToggle = document.querySelector(".fab-toggle");
+        const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+        if (navToggle && mobileNav) {
+          function syncMobileNav(open) {
+            navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+            navToggle.classList.toggle("is-open", open);
+            if (open) {
+              mobileNav.hidden = false;
+              mobileNav.removeAttribute("hidden");
+              mobileNav.classList.add("is-open");
+            } else {
+              mobileNav.hidden = true;
+              mobileNav.setAttribute("hidden", "");
+              mobileNav.classList.remove("is-open");
+            }
+          }
+
+          navToggle.addEventListener("click", () => {
+            const open = navToggle.getAttribute("aria-expanded") === "true";
+            syncMobileNav(!open);
+          });
+
+          mobileNav.querySelectorAll("a").forEach((link) => {
+            link.addEventListener("click", () => syncMobileNav(false));
+          });
+
+          syncMobileNav(false);
+        }
+
+        if (!fabMenu || !fabToggle) {
+          return;
+        }
+
+        function syncFab(open) {
+          fabMenu.dataset.open = open ? "true" : "false";
+          fabToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        }
+
+        fabToggle.addEventListener("click", () => {
+          const open = fabMenu.dataset.open === "true";
+          syncFab(!open);
+        });
+
+        if (canHover) {
+          fabMenu.addEventListener("mouseenter", () => syncFab(true));
+          fabMenu.addEventListener("mouseleave", () => syncFab(false));
+        }
+      })();
+    </script>
+  </body>
+</html>

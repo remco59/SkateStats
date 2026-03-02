@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Nieuwe wedstrijdtijd</h1>
+
+  <section class="card">
+    <div class="muted">Rijder: <strong style="color:white;">{{ owner_name }}</strong></div>
+  </section>
+
+  {% if request and request.query_params and request.query_params.get("error") %}
+    <section class="card">
+      <div class="hint" style="color:#ffb86b;">
+        {% set e = request.query_params.get("error") %}
+        {% if e == "competition" %}
+          Kies een bestaande wedstrijd of vul minimaal <strong>Nieuwe wedstrijdnaam</strong> + <strong>Wedstrijddatum</strong> in.
+        {% elif e == "date" %}
+          Ongeldige datum. Gebruik de date picker.
+        {% elif e == "laps" %}
+          Rondetijden niet goed gelezen. Gebruik komma’s en punt als decimaal (bv. 30.12, 31.00).
+        {% else %}
+          Er ging iets mis.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <form method="post" action="/races/new" class="form">
+
+      <!-- Bestaande of nieuwe wedstrijd -->
+      <label>Bestaande wedstrijd (optioneel)
+        <select name="competition_id" id="competition_id">
+          <option value="">— Nieuwe wedstrijd aanmaken —</option>
+          {% for c in comps %}
+            <option value="{{ c.id }}" {% if selected_competition_id and c.id == selected_competition_id %}selected{% endif %}>
+              {{ fmt_date(c.competition_date) }} — {{ c.name }}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="hint">
+          Kies een bestaande wedstrijd óf maak hieronder een nieuwe aan.
+        </span>
+      </label>
+
+      <div id="new-competition-fields">
+        <div class="grid2">
+          <label>Nieuwe wedstrijdnaam
+            <input name="new_competition_name" placeholder="Clubwedstrijd, NK, Trainingstest, ..." />
+          </label>
+          <label>Locatie (optioneel)
+            <input name="new_competition_venue" placeholder="Kardinge, Thialf, ..." />
+          </label>
+        </div>
+
+        <label>Wedstrijddatum (voor nieuwe wedstrijd)
+          <div class="date-input">
+            <input class="date-input-text" name="new_competition_date" placeholder="dd/mm/jjjj" inputmode="numeric" />
+            <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
+            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+          </div>
+          <span class="hint">
+            Als je geen bestaande wedstrijd kiest, vul minimaal naam + datum in. Gebruik dd/mm/jjjj.
+          </span>
+        </label>
+      </div>
+
+      <!-- ✅ AANGEPAST: afstand dropdown -->
+      <label>Afstand
+        <select name="distance_m" required>
+          <option value="">— Kies afstand —</option>
+          <option value="100">100m</option>
+          <option value="300">300m</option>
+          <option value="500" selected>500m</option>
+          <option value="1000">1000m</option>
+          <option value="1500">1500m</option>
+          <option value="3000">3000m</option>
+          <option value="5000">5000m</option>
+          <option value="10000">10000m</option>
+        </select>
+      </label>
+
+      <div class="grid2">
+        <label>Baan / Lane (optioneel)
+          <input name="lane" placeholder="binnen/buiten" />
+        </label>
+        <label>Tegenstander (optioneel)
+          <input name="opponent" placeholder="naam" />
+        </label>
+      </div>
+
+      <label>Rondetijden (seconden, komma-gescheiden)
+        <input name="laps" placeholder="30.12, 31.00, 31.50" />
+        <span class="hint">
+          Gebruik punt als decimaal.  
+          Voor 500m is split 1 vaak 100m, daarna 400m. Analyse corrigeert dit automatisch.
+        </span>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" name="dnf" />
+        DNF / DNS (telt niet voor PR)
+      </label>
+
+      <label>Notities
+        <input name="notes" placeholder="ijs, gevoel, schaatsen, etc." />
+      </label>
+
+      <button type="submit">Opslaan</button>
+    </form>
+  </section>
+  <script>
+    (function () {
+      const competitionSelect = document.getElementById("competition_id");
+      const newCompetitionFields = document.getElementById("new-competition-fields");
+
+      if (!competitionSelect || !newCompetitionFields) {
+        return;
+      }
+
+      function syncCompetitionFields() {
+        newCompetitionFields.hidden = competitionSelect.value !== "";
+      }
+
+      competitionSelect.addEventListener("change", syncCompetitionFields);
+      syncCompetitionFields();
+    })();
+  </script>
+{% endblock %}

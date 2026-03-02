@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Bewerk wedstrijdtijd</h1>
+
+  <section class="card">
+    <div class="muted">Rijder: <strong style="color:white;">{{ owner_name }}</strong></div>
+    <div class="muted">
+      Huidige wedstrijd:
+      <strong style="color:white;">{{ fmt_date(race.competition_date) }} — {{ race.competition_name }}</strong>
+    </div>
+  </section>
+
+  {% if request and request.query_params and request.query_params.get("error") %}
+    <section class="card">
+      <div class="hint" style="color:#ffb86b;">
+        {% set e = request.query_params.get("error") %}
+        {% if e == "competition" %}
+          Kies een bestaande wedstrijd of vul minimaal <strong>Nieuwe wedstrijdnaam</strong> + <strong>Wedstrijddatum</strong> in.
+        {% elif e == "date" %}
+          Ongeldige datum. Gebruik de date picker.
+        {% elif e == "laps" %}
+          Rondetijden niet goed gelezen. Gebruik komma’s en punt als decimaal (bv. 30.12, 31.00).
+        {% else %}
+          Er ging iets mis.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <form method="post" action="/races/{{ race.id }}/edit" class="form">
+
+      <label>Bestaande wedstrijd (optioneel)
+        <select name="competition_id">
+          <option value="">— Nieuwe wedstrijd aanmaken —</option>
+          {% for c in comps %}
+            <option value="{{ c.id }}" {% if c.id == race.competition_id %}selected{% endif %}>
+              {{ fmt_date(c.competition_date) }} — {{ c.name }}
+            </option>
+          {% endfor %}
+        </select>
+        <span class="hint">Kies een bestaande wedstrijd óf maak hieronder een nieuwe aan.</span>
+      </label>
+
+      <div class="grid2">
+        <label>Nieuwe wedstrijdnaam
+          <input name="new_competition_name" placeholder="Clubwedstrijd, NK, Trainingstest, ..." />
+        </label>
+        <label>Locatie (optioneel)
+          <input name="new_competition_venue" placeholder="Kardinge, Thialf, ..." />
+        </label>
+      </div>
+
+      <label>Wedstrijddatum (voor nieuwe wedstrijd)
+        <div class="date-input">
+          <input class="date-input-text" name="new_competition_date" placeholder="dd/mm/jjjj" inputmode="numeric" />
+          <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
+          <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+        </div>
+        <span class="hint">Alleen invullen als je hierboven géén bestaande wedstrijd kiest.</span>
+      </label>
+
+      <label>Afstand
+        <select name="distance_m" required>
+          <option value="">— Kies afstand —</option>
+          {% for d in [100, 300, 500, 1000, 1500, 3000, 5000, 10000] %}
+            <option value="{{ d }}" {% if race.distance_m == d %}selected{% endif %}>{{ d }}m</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="grid2">
+        <label>Baan / Lane (optioneel)
+          <input name="lane" value="{{ race.lane or '' }}" placeholder="binnen/buiten" />
+        </label>
+        <label>Tegenstander (optioneel)
+          <input name="opponent" value="{{ race.opponent or '' }}" placeholder="naam" />
+        </label>
+      </div>
+
+      <label>Rondetijden (seconden, komma-gescheiden)
+        <input name="laps" value="{{ race.laps_csv or '' }}" placeholder="30.12, 31.00, 31.50" />
+        <span class="hint">
+          Gebruik punt als decimaal. Voor 500m is split 1 vaak 100m, daarna 400m.
+          Analyse normaliseert dit automatisch naar 400m-equivalent.
+        </span>
+      </label>
+
+      <label class="check">
+        <input type="checkbox" name="dnf" {% if race.dnf == 1 %}checked{% endif %}/>
+        DNF / DNS (telt niet voor PR)
+      </label>
+
+      <label>Notities
+        <input name="notes" value="{{ race.notes or '' }}" placeholder="ijs, gevoel, schaatsen, etc." />
+      </label>
+
+      <div class="grid2">
+        <button type="submit">Opslaan</button>
+        <a class="btn" href="/races/{{ race.id }}">Annuleren</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -1,0 +1,16 @@
+services:
+  skatestats:
+    build: ./app
+    container_name: skatestats
+    user: "99:100"
+    restart: unless-stopped
+    env_file: ./.env
+    volumes:
+      - ./data:/data
+    ports:
+      - "8090:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5

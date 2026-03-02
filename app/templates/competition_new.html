@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Nieuwe wedstrijd</h1>
+
+  {% if error %}
+    <section class="card">
+      <div class="hint" style="color:#ffb86b;">
+        {% if error == "date" %}
+          Ongeldige datum. Gebruik de date picker.
+        {% else %}
+          Er ging iets mis.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <form method="post" action="/competitions/new" class="form">
+      <label>Naam
+        <input name="name" placeholder="Clubwedstrijd, NK, ..." required />
+      </label>
+      <label>Locatie
+        <input name="venue" placeholder="Kardinge, Thialf, ..." />
+      </label>
+      <label>Datum
+        <div class="date-input">
+          <input class="date-input-text" name="competition_date" placeholder="dd/mm/jjjj" inputmode="numeric" required />
+          <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
+          <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+        </div>
+        <span class="hint">Gebruik formaat dd/mm/jjjj.</span>
+      </label>
+      <label>Notities
+        <input name="notes" placeholder="Serie, ijs, etc." />
+      </label>
+      <div class="row-actions">
+        <button type="submit">Opslaan</button>
+        <a class="btn" href="/competitions">Annuleren</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}
