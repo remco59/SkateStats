@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="section-header">
+    <div>
+      <h1>Gebruikers</h1>
+      <p class="muted">Beheer accounts en reset wachtwoorden.</p>
+    </div>
+  </div>
+
+  {% if error %}
+    <section class="card">
+      <div class="message message-error">
+        {% if error == "length" %}
+          Wachtwoorden moeten minimaal 8 tekens lang zijn.
+        {% elif error == "confirm" %}
+          De ingevulde wachtwoorden komen niet overeen.
+        {% elif error == "required" %}
+          Gebruikersnaam, schaatsersnaam en wachtwoord zijn verplicht.
+        {% elif error == "username" %}
+          Deze gebruikersnaam bestaat al.
+        {% elif error == "skater" %}
+          Deze schaatsersnaam is al gekoppeld aan een ander account.
+        {% elif error == "selfadmin" %}
+          Je kunt je eigen adminrechten niet uitschakelen.
+        {% elif error == "deleteconfirm" %}
+          Typ de juiste gebruikersnaam om een account te verwijderen.
+        {% else %}
+          Er ging iets mis.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if success %}
+    <section class="card">
+      <div class="message message-success">
+        {% if success == "created" %}
+          Gebruiker aangemaakt.
+        {% elif success == "password" %}
+          Wachtwoord bijgewerkt.
+        {% elif success == "role" %}
+          Rol bijgewerkt.
+        {% elif success == "deleted" %}
+          Account verwijderd.
+        {% else %}
+          Opgeslagen.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Nieuwe gebruiker</h2>
+    <form method="post" action="/admin/users" class="form">
+      <div class="grid2">
+        <label>Gebruikersnaam
+          <input name="username" required />
+        </label>
+        <label>Schaatsersnaam
+          <input name="skater_name" required />
+        </label>
+      </div>
+      <div class="grid2">
+        <label>Tijdelijk wachtwoord
+          <input type="password" name="password" required />
+        </label>
+        <label>Herhaal wachtwoord
+          <input type="password" name="confirm_password" required />
+        </label>
+      </div>
+      <label class="check">
+        <input type="checkbox" name="is_admin" />
+        Adminrechten geven
+      </label>
+      <button type="submit">Gebruiker toevoegen</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Bestaande gebruikers</h2>
+    <label>Zoeken
+      <input id="admin-user-search" type="search" placeholder="Zoek op schaatsernaam of gebruikersnaam" />
+    </label>
+    <div class="admin-user-list">
+      {% for item in users %}
+        <article
+          class="admin-user-item"
+          data-user-filter="{{ item.skater_name|lower }} {{ item.username|lower }}"
+        >
+          <details class="admin-user-details">
+            <summary class="admin-user-summary">
+              <div class="admin-user-heading">
+                <strong class="admin-user-name">{{ item.skater_name }}</strong>
+                <div class="admin-user-username">{{ item.username }}</div>
+              </div>
+            </summary>
+
+            <div class="admin-user-body">
+              <div class="admin-user-meta">
+                <span class="hint">{% if item.is_admin == 1 %}Admin{% else %}Gebruiker{% endif %}</span>
+              </div>
+              <form method="post" action="/admin/users/{{ item.id }}/password" class="form">
+                <div class="grid2">
+                  <label>Nieuw wachtwoord
+                    <input type="password" name="new_password" required />
+                  </label>
+                  <label>Herhaal wachtwoord
+                    <input type="password" name="confirm_password" required />
+                  </label>
+                </div>
+                <button type="submit">Wachtwoord opslaan</button>
+              </form>
+
+              <form method="post" action="/admin/users/{{ item.id }}/admin" class="form inline-card-form">
+                <label class="check">
+                  <input type="checkbox" name="is_admin" {% if item.is_admin == 1 %}checked{% endif %} />
+                  Adminrechten
+                </label>
+                <button type="submit" class="btn-secondary">Rol opslaan</button>
+              </form>
+
+              <div class="inline-card-form">
+                <button
+                  type="button"
+                  class="btn-danger"
+                  data-open-admin-delete
+                  data-user-id="{{ item.id }}"
+                  data-username="{{ item.username }}"
+                  data-skater-name="{{ item.skater_name }}"
+                >
+                  Account verwijderen
+                </button>
+              </div>
+            </div>
+          </details>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  <script>
+    (function () {
+      const searchInput = document.getElementById("admin-user-search");
+      if (!searchInput) {
+        return;
+      }
+
+      const items = Array.from(document.querySelectorAll("[data-user-filter]"));
+
+      function syncFilter() {
+        const query = searchInput.value.trim().toLowerCase();
+        items.forEach((item) => {
+          const haystack = item.getAttribute("data-user-filter") || "";
+          item.hidden = query !== "" && !haystack.includes(query);
+        });
+      }
+
+      searchInput.addEventListener("input", syncFilter);
+      syncFilter();
+
+      const dialog = document.getElementById("admin-delete-account-dialog");
+      const closeButton = document.querySelector("[data-close-admin-delete]");
+      const confirmInput = document.getElementById("admin-delete-confirm-username");
+      const form = document.getElementById("admin-delete-form");
+      const title = document.getElementById("admin-delete-title");
+      const usernameLabel = document.getElementById("admin-delete-username");
+
+      if (!dialog || !closeButton || !confirmInput || !form || !title || !usernameLabel) {
+        return;
+      }
+
+      document.querySelectorAll("[data-open-admin-delete]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const userId = button.getAttribute("data-user-id");
+          const username = button.getAttribute("data-username") || "";
+          const skaterName = button.getAttribute("data-skater-name") || username;
+
+          form.setAttribute("action", `/admin/users/${userId}/delete`);
+          title.textContent = `${skaterName} verwijderen?`;
+          usernameLabel.textContent = username;
+          confirmInput.value = "";
+
+          if (typeof dialog.showModal === "function") {
+            dialog.showModal();
+            return;
+          }
+
+          dialog.setAttribute("open", "open");
+        });
+      });
+
+      closeButton.addEventListener("click", () => {
+        if (typeof dialog.close === "function") {
+          dialog.close();
+          return;
+        }
+        dialog.removeAttribute("open");
+      });
+
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog && typeof dialog.close === "function") {
+          dialog.close();
+        }
+      });
+    })();
+  </script>
+
+  <dialog class="dialog-backdrop" id="admin-delete-account-dialog">
+    <div class="dialog-content">
+      <h2 id="admin-delete-title">Account verwijderen?</h2>
+      <p class="muted">
+        Typ <strong id="admin-delete-username"></strong> om te bevestigen. Alle gekoppelde wedstrijden en ritten worden verwijderd.
+      </p>
+      <form method="post" action="/admin/users/0/delete" class="form" id="admin-delete-form">
+        <label>Bevestig gebruikersnaam
+          <input id="admin-delete-confirm-username" name="confirm_username" autocomplete="off" required />
+        </label>
+        <div class="settings-danger-actions">
+          <button type="submit" class="btn-danger">Definitief verwijderen</button>
+          <button type="button" class="btn-secondary" data-close-admin-delete>Annuleren</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+{% endblock %}

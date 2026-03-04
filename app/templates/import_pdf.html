@@ -1,27 +1,127 @@
 {% extends "base.html" %}
 {% block content %}
-  <h1>Importeer uitslag-PDF</h1>
+  <h1>Importeren</h1>
 
   <section class="card">
     <p class="muted">
-      Upload een uitslag in PDF-formaat. De import zoekt alle ritten voor de opgegeven naam
-      en importeert meerdere ritten uit dezelfde uitslag automatisch.
+      De import zoekt alle ritten voor <strong>{{ upload_owner_name }}</strong>
+      en importeert meerdere ritten uit competities automatisch. Je kunt hier resultaten
+      ophalen uit de SpeedSkatingResults, OSTA of een uitslagenoverzicht van <a href="https://inschrijven.schaatsen.nl/" target="_blank" rel="noreferrer">inschrijven.schaatsen.nl</a>.
     </p>
   </section>
 
   {% if error_message %}
     <section class="card">
-      <div class="hint" style="color:#ffb86b;">{{ error_message }}</div>
+      <div class="hint hint-warning">{{ error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if ssr_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ ssr_error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if ssr_success_message %}
+    <section class="card">
+      <div class="hint hint-success">{{ ssr_success_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ osta_error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_success_message %}
+    <section class="card">
+      <div class="hint hint-success">{{ osta_success_message }}</div>
     </section>
   {% endif %}
 
   <section class="card">
-    <form method="post" action="/import/pdf" enctype="multipart/form-data" class="form">
-      <label>Naam om op te matchen
-        <input name="owner_name" value="{{ upload_owner_name }}" required />
-        <span class="hint">Standaard is dit de huidige owner, maar je kunt dit hier aanpassen voor de upload.</span>
-      </label>
+    <h2>OSTA</h2>
+    <form method="post" action="/import/osta" class="form">
 
+      <div class="hint">
+        Deze import haalt wedstrijddagen en ritdetails op van OSTA, inclusief rondetijden uit de ritpagina.
+        Zonder update-optie worden datums overgeslagen zodra er al een wedstrijd op die dag bestaat.
+        OSTA ondersteunt geen wedstrijden buiten Nederland, dus buitenlandse ritten worden genegeerd.
+      </div>
+
+      <div class="grid2">
+        <label>Naam
+          <input name="osta_search_name" value="{{ osta_search_name }}" placeholder="Volledige naam" required />
+          <span class="hint">Zoeknaam zoals op osta.nl. Als PID bekend is, is dit alleen nog ter controle.</span>
+        </label>
+        <label>PID (optioneel)
+          <input name="osta_pid" value="{{ osta_pid }}" placeholder="bijv. 86651033-b5c2-4819-2162-08ddeb0685e4" />
+          <span class="hint">Leeg laten om eerst via naam te zoeken.</span>
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Seizoen
+          <input name="osta_season" value="{{ osta_season }}" placeholder="bijv. 2025 of ALL" required />
+          <span class="hint">Voer het startjaar van het seizoen in. Gebruik <strong>ALL</strong> voor alle seizoenen.</span>
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" name="osta_update_existing" {% if osta_update_existing %}checked{% endif %} />
+          <span>Bestaande wedstrijden op dezelfde datum updaten met OSTA-rondetijden</span>
+        </label>
+      </div>
+
+      <button type="submit">Importeer uit OSTA</button>
+
+      <div class="hint">
+        Bron: <a href="https://www.osta.nl/" target="_blank" rel="noreferrer">OSTA</a>.
+      </div>
+
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>SpeedSkatingResults</h2>
+    <form method="post" action="/import/speedskatingresults" class="form">
+
+       <div class="hint">
+        Deze import haalt wedstrijddagen en ritdetails op van SpeedSkatingResults, exclusief rondetijden.
+        Slaat een hele wedstrijddag over zodra er al een wedstrijd bestaat op die datum.
+      </div>
+
+      <div class="grid2">
+        <label>Voornaam
+          <input name="ssr_given_name" value="{{ ssr_given_name }}" placeholder="bijv. Remco" />
+        </label>
+        <label>Achternaam
+          <input name="ssr_family_name" value="{{ ssr_family_name }}" placeholder="bijv. Land" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Skater ID
+          <input name="ssr_skater_id" value="{{ ssr_skater_id }}" placeholder="bijv. 121536" />
+          <span class="hint">Optioneel. Als dit leeg is, wordt eerst lookup op naam gedaan.</span>
+        </label>
+        <label>Seizoen
+          <input name="ssr_season" value="{{ ssr_season }}" placeholder="bijv. 2025" required />
+          <span class="hint">Voer het startjaar van het seizoen in.</span>
+        </label>
+      </div>
+
+      <button type="submit">Importeer uit SpeedSkatingResults</button>
+
+      <div class="hint">
+        Bron: <a href="https://speedskatingresults.com/index.php?p=200" target="_blank" rel="noreferrer">SpeedSkatingResults API</a>.
+      </div>
+
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>PDF</h2>
+    <form method="post" action="/import/pdf" enctype="multipart/form-data" class="form">
       <div class="grid2">
         <label>Wedstrijdnaam (optioneel)
           <input name="competition_name" value="{{ upload_competition_name }}" placeholder="Leeg laten om uit PDF te halen" />

@@ -2,6 +2,16 @@
 {% block content %}
   <h1>Overzicht</h1>
 
+  {% if competition_count == 0 and race_count == 0 %}
+    <section class="card">
+      <div class="message message-warning">
+        Er is nog geen data beschikbaar.
+        <a href="/import/pdf">Importeer via OSTA of SpeedSkatingResults</a>
+        of <a href="/races/new">voeg handmatig een rit toe</a>.
+      </div>
+    </section>
+  {% endif %}
+
   <section class="card">
     <div class="grid3">
       <div class="stat">
@@ -104,7 +114,7 @@
           <span class="btn-icon" aria-hidden="true">&#x1F5D0;</span>
         </summary>
         {% if trend_error_message %}
-          <div class="hint" style="color:#ffb86b; margin-bottom:10px;">{{ trend_error_message }}</div>
+          <div class="hint hint-warning" style="margin-bottom:10px;">{{ trend_error_message }}</div>
         {% endif %}
         <form method="get" action="/" class="form trend-filter-form" id="trend-filters-panel">
           <label>Periode
@@ -167,7 +177,7 @@
                       ></line>
                       <text x="{{ tick.x }}" y="{{ trend.sparkline.baseline_y + 16 }}" class="sparkline-label">{{ tick.label }}</text>
                     {% endfor %}
-                    <polyline points="{{ trend.sparkline.points }}" />
+                    <polyline points="{{ trend.sparkline.points }}" class="sparkline-line" pathLength="100" />
                     {% for point in trend.sparkline.circles %}
                       <circle
                         cx="{{ point.x }}"
@@ -225,7 +235,9 @@
         const countEl = tooltip ? tooltip.querySelector(".chart-tooltip-count") : null;
         const linkEl = tooltip ? tooltip.querySelector(".chart-tooltip-link") : null;
         const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+        const tooltipHoverDelayMs = 250;
         let activeCircle = null;
+        let showTooltipTimer = null;
 
         if (!tooltip || !svg || !distanceEl || !timeEl || !nameEl || !dateEl || !countEl || !linkEl) {
           return;
@@ -244,6 +256,10 @@
         }
 
         function showTooltip(circle) {
+          if (showTooltipTimer !== null) {
+            window.clearTimeout(showTooltipTimer);
+            showTooltipTimer = null;
+          }
           if (activeCircle && activeCircle !== circle) {
             activeCircle.classList.remove("is-active");
           }
@@ -261,6 +277,10 @@
         }
 
         function hideTooltip() {
+          if (showTooltipTimer !== null) {
+            window.clearTimeout(showTooltipTimer);
+            showTooltipTimer = null;
+          }
           tooltip.hidden = true;
           wrap.classList.remove("is-active");
           if (activeCircle) {
@@ -274,7 +294,14 @@
             if (isCoarsePointer) {
               return;
             }
-            showTooltip(circle);
+            if (activeCircle || !tooltip.hidden) {
+              showTooltip(circle);
+              return;
+            }
+            showTooltipTimer = window.setTimeout(() => {
+              showTooltipTimer = null;
+              showTooltip(circle);
+            }, tooltipHoverDelayMs);
           });
 
           circle.addEventListener("click", (event) => {

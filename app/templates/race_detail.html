@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
-  <h1>{{ owner_name }} — {{ race.distance_m }}m</h1>
+  <h1>{{ race.distance_m }}m • {{ race.competition_name }}</h1>
 
   <p class="muted">
-    {{ fmt_date(race.competition_date) }} • {{ race.competition_name }}
+    {{ fmt_date(race.competition_date) }}
     {% if race.venue %} • {{ race.venue }}{% endif %}
   </p>
 
   <div class="row-actions">
-    <a class="btn" href="/races/new?competition_id={{ race.competition_id }}">Nieuwe tijd</a>
     <a class="btn" href="/races/{{ race.id }}/edit">Bewerken</a>
+    <a class="btn" href="/races/new?competition_id={{ race.competition_id }}">Nieuwe rit</a>
     <form method="post" action="/races/{{ race.id }}/delete" class="inline-form" onsubmit="return confirm('Weet je zeker dat je deze rit wilt verwijderen?');">
       <button type="submit" class="btn btn-danger">Verwijderen</button>
     </form>
@@ -34,14 +34,20 @@
 
     <div class="grid3">
       <div class="stat">
-        <div class="label">Splits</div>
-        <div class="value mono">{{ metrics.segment_count }}</div>
-      </div>
-      <div class="stat">
         <div class="label">Gem. (400m-eq)</div>
         <div class="value mono">
           {% if metrics.avg_400 is not none %}
             {{ "%.2f"|format(metrics.avg_400) }}
+          {% else %}
+            -
+          {% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="label">Gem. verval per ronde (400m-eq)</div>
+        <div class="value mono">
+          {% if metrics.avg_fade_per_segment_400eq is not none %}
+            {{ "%.2f"|format(metrics.avg_fade_per_segment_400eq) }}
           {% else %}
             -
           {% endif %}
@@ -59,31 +65,34 @@
       </div>
     </div>
 
-    <p class="muted">
-      Opening split: {{ metrics.opening_m }}m — analyse normaliseert splits naar 400m-equivalent.
-    </p>
-
     {% if laps|length > 0 %}
       <h3>Splits</h3>
       <table>
         <thead>
-          <tr><th>#</th><th>sec</th></tr>
+          <tr><th>#</th><th>Afstand</th><th>sec</th><th>400m-eq</th><th>Verval vs vorige</th></tr>
         </thead>
         <tbody>
-          {% for l in laps %}
+          {% for split in split_rows %}
             <tr>
-              <td class="mono">{{ loop.index }}</td>
-              <td class="mono">{{ "%.2f"|format(l) }}</td>
+              <td class="mono">{{ split.index }}</td>
+              <td class="mono">{{ split.distance_m if split.distance_m is not none else "-" }}m</td>
+              <td class="mono">{{ "%.2f"|format(split.seconds) }}</td>
+              <td class="mono">{{ fmt_sec(split.per_400eq) }}</td>
+              <td class="mono">
+                {% if split.delta_prev_400eq is not none %}
+                  <span class="{% if split.delta_prev_400eq <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+                    {% if split.delta_prev_400eq > 0 %}+{% endif %}{{ fmt_sec(split.delta_prev_400eq) }}
+                  </span>
+                {% else %}
+                  -
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     {% else %}
       <p class="muted">Geen rondetijden ingevuld.</p>
-    {% endif %}
-
-    {% if race.notes %}
-      <p><strong>Notities:</strong> {{ race.notes }}</p>
     {% endif %}
 
     {% if split_chart %}
@@ -114,7 +123,7 @@
             class="split-chart-grid split-chart-grid-strong"
           ></line>
 
-          <polyline points="{{ split_chart.points }}" class="split-chart-line"></polyline>
+          <polyline points="{{ split_chart.points }}" class="split-chart-line" pathLength="100"></polyline>
 
           {% for point in split_chart.circles %}
             <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4.5" class="split-chart-point"></circle>
@@ -122,7 +131,92 @@
           {% endfor %}
         </svg>
       </div>
-      <p class="muted">X-as: splitnummer. Y-as: seconden per split.</p>
+    {% endif %}
+
+    {% if race.notes %}
+      <h3>Notities</h3>
+      <p class="notes-block">{{ format_notes_html(race.notes) }}</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Vergelijken</h2>
+    {% if comparison_candidates|length == 0 %}
+      <p class="muted">Geen andere ritten op deze afstand beschikbaar om mee te vergelijken.</p>
+    {% else %}
+      <form method="get" action="/races/{{ race.id }}" class="form">
+        <label>Vergelijk met
+          <select name="compare_race_id">
+            <option value="">Kies een rit</option>
+            {% for option in comparison_candidates %}
+              <option value="{{ option.id }}" {% if selected_compare_id == (option.id|string) %}selected{% endif %}>
+                {{ fmt_date(option.competition_date) }} - {{ option.competition_name }} - {{ fmt_ms(option.total_time_ms) }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="row-actions">
+          <button type="submit">Vergelijk</button>
+          {% if selected_compare_id %}
+            <a class="btn" href="/races/{{ race.id }}">Reset</a>
+          {% endif %}
+        </div>
+      </form>
+    {% endif %}
+
+    {% if comparison %}
+      <div class="comparison-grid">
+        {% for item in comparison.summary %}
+          <div class="stat">
+            <div class="label">{{ item.label }}</div>
+            <div class="value mono">
+              {% if item.delta_ms is none %}
+                -
+              {% else %}
+                {% if item.delta_ms > 0 %}+{% endif %}{{ fmt_ms(item.delta_ms) }}
+              {% endif %}
+            </div>
+            <div class="muted comparison-subtext">
+              basis {{ fmt_ms(item.base_ms) }} / vergelijking {{ fmt_ms(item.compare_ms) }}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>Split</th><th>Basis</th><th>Vergelijking</th><th>Delta</th><th>400m-eq delta</th></tr>
+          </thead>
+          <tbody>
+            {% for split in comparison.splits %}
+              <tr>
+                <td class="mono">{{ split.index }}</td>
+                <td class="mono">{% if split.base_split is not none %}{{ "%.2f"|format(split.base_split) }}{% else %}-{% endif %}</td>
+                <td class="mono">{% if split.compare_split is not none %}{{ "%.2f"|format(split.compare_split) }}{% else %}-{% endif %}</td>
+                <td class="mono">
+                  {% if split.split_delta_ms is none %}
+                    -
+                  {% else %}
+                    <span class="{% if split.split_delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+                      {% if split.split_delta_ms > 0 %}+{% endif %}{{ fmt_ms(split.split_delta_ms) }}
+                    </span>
+                  {% endif %}
+                </td>
+                <td class="mono">
+                  {% if split.eq_delta_ms is none %}
+                    -
+                  {% else %}
+                    <span class="{% if split.eq_delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+                      {% if split.eq_delta_ms > 0 %}+{% endif %}{{ fmt_ms(split.eq_delta_ms) }}
+                    </span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% endif %}
   </section>
 {% endblock %}

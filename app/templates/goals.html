@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <div>
+      <h1>Doelen en targets</h1>
+      <p class="muted">Leg per afstand je doeltijd en splitdoelen vast.</p>
+    </div>
+  </div>
+
+  {% if error %}
+    <section class="card">
+      <div class="message message-error">
+        {% if error == "time" %}
+          Een of meer tijden konden niet gelezen worden.
+        {% elif error == "empty" %}
+          Vul minimaal een target of notitie in.
+        {% else %}
+          Er ging iets mis.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if success %}
+    <section class="card">
+      <div class="message message-success">
+        {% if success == "saved" %}
+          Doel opgeslagen.
+        {% elif success == "deleted" %}
+          Doel verwijderd.
+        {% else %}
+          Opgeslagen.
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Nieuw doel</h2>
+    <form method="post" action="/goals" class="form">
+      <div class="grid2">
+        <label>Afstand
+          <select name="distance_m" required>
+            {% for distance in distances %}
+              <option value="{{ distance }}">{{ distance }}m</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Doeltijd
+          <input name="target_time" placeholder="bijv. 40.50 of 2:12.34" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Target opening
+          <input name="target_opening" placeholder="bijv. 11.20 of 27.80" />
+        </label>
+        <label>Target gem. 400-eq
+          <input name="target_avg_400" placeholder="bijv. 31.10" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Target laatste 400-eq
+          <input name="target_last_400" placeholder="bijv. 32.00" />
+        </label>
+        <label>Target verval
+          <input name="target_fade_400" placeholder="bijv. 1.20" />
+        </label>
+      </div>
+
+      <label>Notities
+        <input name="notes" placeholder="Waar wil je op letten?" />
+      </label>
+
+      <div class="row-actions">
+        <button type="submit">Doel opslaan</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Bestaande doelen</h2>
+    {% if goals|length == 0 %}
+      <p class="muted">Nog geen doelen vastgelegd.</p>
+    {% else %}
+      <div class="goal-list">
+        {% for goal in goals %}
+          <article class="goal-card">
+            <div class="row">
+              <strong class="mono">{{ goal.distance_m }}m</strong>
+              <form method="post" action="/goals/{{ goal.distance_m }}/delete" class="inline-form">
+                <button type="submit" class="btn-secondary">Verwijderen</button>
+              </form>
+            </div>
+            <div class="goal-metrics">
+              <div><span class="muted">Doeltijd</span><br><span class="mono">{{ fmt_ms(goal.target_time_ms) }}</span></div>
+              <div><span class="muted">Opening</span><br><span class="mono">{{ fmt_ms(goal.target_opening_ms) }}</span></div>
+              <div><span class="muted">Gem. 400-eq</span><br><span class="mono">{{ fmt_ms(goal.target_avg_400_ms) }}</span></div>
+              <div><span class="muted">Laatste 400-eq</span><br><span class="mono">{{ fmt_ms(goal.target_last_400_ms) }}</span></div>
+              <div><span class="muted">Verval</span><br><span class="mono">{{ fmt_ms(goal.target_fade_400_ms) }}</span></div>
+            </div>
+            {% if goal.notes %}
+              <p class="muted">{{ goal.notes }}</p>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -3,16 +3,16 @@
   <h1>Bewerk wedstrijdtijd</h1>
 
   <section class="card">
-    <div class="muted">Rijder: <strong style="color:white;">{{ owner_name }}</strong></div>
+    <div class="muted">Rijder: <strong class="text-strong">{{ owner_name }}</strong></div>
     <div class="muted">
       Huidige wedstrijd:
-      <strong style="color:white;">{{ fmt_date(race.competition_date) }} — {{ race.competition_name }}</strong>
+      <strong class="text-strong">{{ fmt_date(race.competition_date) }} — {{ race.competition_name }}</strong>
     </div>
   </section>
 
   {% if request and request.query_params and request.query_params.get("error") %}
     <section class="card">
-      <div class="hint" style="color:#ffb86b;">
+      <div class="hint hint-warning">
         {% set e = request.query_params.get("error") %}
         {% if e == "competition" %}
           Kies een bestaande wedstrijd of vul minimaal <strong>Nieuwe wedstrijdnaam</strong> + <strong>Wedstrijddatum</strong> in.

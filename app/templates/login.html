@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="auth-shell">
+    <section class="card auth-card">
+      <h1>Inloggen</h1>
+      <p class="muted">Log in met je SkateStats-account.</p>
+
+      {% if error %}
+        <div class="message message-error">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/login" class="form">
+        <input type="hidden" name="next" value="{{ next_path }}" />
+        <label>Gebruikersnaam
+          <input name="username" autocomplete="username" required />
+        </label>
+        <label>Wachtwoord
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Inloggen</button>
+      </form>
+    </section>
+  </section>
+{% endblock %}

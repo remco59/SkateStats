@@ -4,11 +4,11 @@
     <div>
       <h1>{{ comp.name }}</h1>
       <p class="muted">{{ fmt_date(comp.competition_date) }}{% if comp.venue %} • {{ comp.venue }}{% endif %}</p>
-      {% if comp.notes %}<p>{{ comp.notes }}</p>{% endif %}
+      {% if comp.notes %}<p class="notes-block">{{ format_notes_html(comp.notes) }}</p>{% endif %}
     </div>
     <div class="row-actions">
       <a class="btn" href="/competitions/{{ comp.id }}/edit">Bewerken</a>
-      <a class="btn" href="/races/new">Nieuwe tijd</a>
+      <a class="btn" href="/races/new">Nieuwe rit</a>
       <form method="post" action="/competitions/{{ comp.id }}/delete" class="inline-form" onsubmit="return confirm('Weet je zeker dat je deze wedstrijd en alle gekoppelde ritten wilt verwijderen?');">
         <button type="submit" class="btn btn-danger">Verwijderen</button>
       </form>
@@ -16,9 +16,9 @@
   </div>
 
   <section class="card">
-    <h2>Tijden ({{ owner_name }})</h2>
+    <h2>Ritten</h2>
     {% if races|length == 0 %}
-      <p>Nog geen tijden in deze wedstrijd.</p>
+      <p>Nog geen ritten in deze wedstrijd.</p>
     {% else %}
       <table>
         <thead>

@@ -1,57 +1,138 @@
 <!doctype html>
-<html lang="nl">
+<html lang="nl" data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
     <title>{{ app_title }}</title>
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="alternate icon" href="/static/favicon.svg">
   </head>
-  <body>
+  <body data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
     <header class="topbar">
       <div class="brand">
         <a href="/">{{ app_title }}</a>
-        <span class="tag">owner: {{ owner_name }}</span>
+        {% if current_user %}
+          <span class="tag">{{ current_user.username }} · {{ owner_name }}</span>
+        {% else %}
+          <span class="tag">login required</span>
+        {% endif %}
       </div>
-      <nav class="nav-desktop">
-        <a href="/stats">Statistieken</a>
-        <a href="/competitions">Wedstrijden</a>
-        <a href="/races">Ritten</a>
-        <a href="/import/pdf">Importeren</a>
-      </nav>
-      <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
-        <span></span>
-        <span></span>
-        <span></span>
-      </button>
+      {% if current_user %}
+        <nav class="nav-desktop">
+          <a href="/stats">Statistieken</a>
+          <!--<a href="/goals">Doelen</a>-->
+          <a href="/competitions">Wedstrijden</a>
+          <a href="/races">Ritten</a>
+          <a href="/account/settings">Instellingen</a>
+          {% if current_user.is_admin == 1 %}
+            <a href="/admin/users">Admin paneel</a>
+          {% endif %}
+          <form method="post" action="/logout" class="inline-form">
+            <button type="submit" class="btn-secondary">Uitloggen</button>
+          </form>
+        </nav>
+        <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+      {% endif %}
     </header>
 
-    <nav id="mobile-nav" class="nav-mobile" hidden>
-      <a href="/stats">Statistieken</a>
-      <a href="/competitions">Wedstrijden</a>
-      <a href="/races">Ritten</a>
-      <a href="/import/pdf">Importeren</a>
-    </nav>
+    {% if current_user %}
+      <nav id="mobile-nav" class="nav-mobile" hidden>
+        <a href="/stats">Statistieken</a>
+        <!--<a href="/goals">Doelen</a>-->
+        <a href="/competitions">Wedstrijden</a>
+        <a href="/races">Ritten</a>
+        <a href="/account/settings">Instellingen</a>
+        {% if current_user.is_admin == 1 %}
+          <a href="/admin/users">Admin paneel</a>
+        {% endif %}
+        <form method="post" action="/logout" class="inline-form">
+          <button type="submit" class="btn btn-danger">Uitloggen</button>
+        </form>
+      </nav>
+    {% endif %}
 
     <main class="container">
       {% block content %}{% endblock %}
     </main>
 
-    <div class="fab-menu" data-open="false">
-      <div class="fab-actions">
-        <a class="fab-action" href="/competitions/new">Wedstrijd toevoegen</a>
-        <a class="fab-action" href="/races/new">Tijd toevoegen</a>
+    {% if current_user %}
+      <div class="fab-menu" data-open="false">
+        <div class="fab-actions">
+          <a class="fab-action" href="/import/pdf">Importeren</a>
+          <a class="fab-action" href="/competitions/new">Wedstrijd toevoegen</a>
+          <a class="fab-action" href="/races/new">Rit toevoegen</a>
+        </div>
+        <button type="button" class="fab-toggle" aria-label="Snelle acties" aria-expanded="false">+</button>
       </div>
-      <button type="button" class="fab-toggle" aria-label="Snelle acties" aria-expanded="false">+</button>
-    </div>
+    {% endif %}
 
     <footer class="footer">
-      <span>SkateStats • Copyright 2026</span>
+      <span>SkateStats • Copyright 2026 • Gemaakt met ❤️ door Remco Land</span>
     </footer>
 
     <script>
       (function () {
+        const root = document.documentElement;
+        const body = document.body;
+        const media = window.matchMedia("(prefers-color-scheme: light)");
+        const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+        function resolveTheme(preference) {
+          if (preference === "light") {
+            return "light";
+          }
+          if (preference === "system") {
+            return media.matches ? "light" : "dark";
+          }
+          return "dark";
+        }
+
+        function applyTheme(preference) {
+          const nextPreference = preference || root.dataset.themePreference || "dark";
+          const nextTheme = resolveTheme(nextPreference);
+          root.dataset.themePreference = nextPreference;
+          root.dataset.theme = nextTheme;
+          if (body) {
+            body.dataset.themePreference = nextPreference;
+            body.dataset.theme = nextTheme;
+          }
+        }
+
+        applyTheme(root.dataset.themePreference || "dark");
+        if (typeof media.addEventListener === "function") {
+          media.addEventListener("change", () => {
+            if ((root.dataset.themePreference || "dark") === "system") {
+              applyTheme("system");
+            }
+          });
+        }
+
+        if (!prefersReducedMotion) {
+          const revealSelector = [
+            "main .card",
+            "main .message",
+            "main .stat",
+            "main .trend-item",
+            "main .admin-user-item",
+            "main .goal-card",
+            "main .split-chart-wrap"
+          ].join(", ");
+          const revealItems = Array.from(document.querySelectorAll(revealSelector));
+          revealItems.forEach((element, index) => {
+            element.classList.add("js-reveal");
+            element.style.setProperty("--enter-index", String(index));
+          });
+          window.requestAnimationFrame(() => {
+            body.classList.add("motion-ready");
+          });
+        }
+
         document.querySelectorAll(".date-input").forEach((wrapper) => {
           const textInput = wrapper.querySelector(".date-input-text");
           const pickerInput = wrapper.querySelector(".date-input-picker");
@@ -164,6 +245,8 @@
           fabMenu.addEventListener("mouseenter", () => syncFab(true));
           fabMenu.addEventListener("mouseleave", () => syncFab(false));
         }
+
+        window.applySkateStatsTheme = applyTheme;
       })();
     </script>
   </body>
