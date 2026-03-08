@@ -198,6 +198,8 @@ th{ color:var(--muted); font-weight:700; font-size:12px; }
 .stat{ border:1px solid var(--border); border-radius:14px; padding:12px; background:var(--panel); }
 .stat .label{ color:var(--muted); font-size:12px; }
 .stat .value{ font-size:20px; font-weight:800; margin-top:6px; }
+.stat-more{ display:flex; align-items:flex-end; }
+.stat-more-link{ width:100%; text-align:center; font-weight:800; }
 .trend-list{ display:grid; gap:14px; }
 .trend-item{ padding:12px; border:1px solid var(--border); border-radius:14px; background:var(--panel); }
 .sparkline-wrap{ position:relative; margin:8px 0 0; }
@@ -349,6 +351,7 @@ body.motion-ready .split-chart-point{
   .nav-desktop{ display:none; }
   .nav-toggle{ display:block; }
   .tag{ display:none; }
+  .stat-hide-mobile{ display:none; }
   .sparkline circle{ opacity:0; }
 }
 @media(min-width:761px){

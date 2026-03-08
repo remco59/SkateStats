@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 from datetime import date, datetime, timedelta
 from html import escape
-from statistics import mean
+from statistics import mean, median, pstdev
 from typing import List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
@@ -1775,10 +1775,14 @@ def home(
     best_times: dict[int, dict] = {}
     trend_rows: list[dict] = []
     races_by_distance: dict[int, list] = {}
+    distance_counts: dict[int, int] = {}
     venue_counts: dict[str, int] = {}
     pr_progress = build_pr_progress(all_races)
     for race in all_races:
         races_by_distance.setdefault(race["distance_m"], []).append(race)
+        if race["distance_m"] is not None:
+            distance = int(race["distance_m"])
+            distance_counts[distance] = distance_counts.get(distance, 0) + 1
         if race["venue"]:
             venue_counts[race["venue"]] = venue_counts.get(race["venue"], 0) + 1
         if race["dnf"] != 1:
@@ -1789,6 +1793,9 @@ def home(
     favorite_venue = "-"
     if venue_counts:
         favorite_venue = sorted(venue_counts.items(), key=lambda item: (-item[1], item[0].lower()))[0][0]
+    favorite_distance = "-"
+    if distance_counts:
+        favorite_distance = f"{sorted(distance_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]}m"
 
     selected_trend_period = trend_period if trend_period in {"month", "season", "custom"} else "season"
     selected_trend_date_from = trend_date_from.strip()
@@ -1840,6 +1847,7 @@ def home(
         race_count=len(all_races),
         pr_count=len(pr_race_ids),
         favorite_venue=favorite_venue,
+        favorite_distance=favorite_distance,
         best_times=[best_times[d] for d in sorted(best_times)],
         trend_rows=trend_rows,
         selected_trend_period=selected_trend_period,
@@ -1891,8 +1899,6 @@ def stats_page(
 
     selected_distance = distance_m.strip()
     distance_options = sorted({int(row["distance_m"]) for row in rows if row["distance_m"] is not None})
-    pr_race_ids = collect_pr_race_ids(rows)
-
     filtered_rows = list(rows)
     if selected_season:
         season_start, season_end = season_bounds_from_label(selected_season)
@@ -1906,27 +1912,246 @@ def stats_page(
         except ValueError:
             selected_distance = ""
 
-    timed_rows = [row for row in filtered_rows if row["total_time_ms"] is not None and row["dnf"] != 1]
-    split_rows = [row for row in timed_rows if laps_from_csv(row["laps_csv"])]
+    timed_rows = [row for row in filtered_rows if row["total_time_ms"] is not None and row["dnf"] != 1 and row["distance_m"]]
+    sorted_timed_rows = sorted(
+        timed_rows,
+        key=lambda row: (
+            row["competition_date"] or "",
+            int(row["id"]),
+        ),
+    )
 
-    venues: dict[str, int] = {}
+    pb_race_ids = collect_pr_race_ids(filtered_rows)
+
+    sb_race_ids: set[int] = set()
+    sb_best_by_key: dict[tuple[str, int], int] = {}
+    for row in sorted_timed_rows:
+        season_label = season_label_for_date(row["competition_date"])
+        key = (season_label, int(row["distance_m"]))
+        total_ms = int(row["total_time_ms"])
+        best_value = sb_best_by_key.get(key)
+        if best_value is None or total_ms < best_value:
+            sb_best_by_key[key] = total_ms
+            sb_race_ids.add(int(row["id"]))
+
+    total_distance_km = sum(int(row["distance_m"]) for row in filtered_rows if row["distance_m"] is not None) / 1000.0
+
+    by_distance: dict[int, list[sqlite3.Row]] = {}
+    for row in sorted_timed_rows:
+        by_distance.setdefault(int(row["distance_m"]), []).append(row)
+
+    sb_reference_season = selected_season or current_season
+    average_rows: list[dict] = []
+    split_rows: list[dict] = []
+    consistency_rows: list[dict] = []
+    progress_rows: list[dict] = []
+
+    for distance in sorted(by_distance):
+        rows_for_distance = by_distance[distance]
+        times = [int(row["total_time_ms"]) for row in rows_for_distance]
+        pb_row = min(rows_for_distance, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
+        pb_ms = int(pb_row["total_time_ms"])
+        season_subset = [
+            row for row in rows_for_distance if season_label_for_date(row["competition_date"]) == sb_reference_season
+        ]
+        season_best_row = (
+            min(season_subset, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
+            if season_subset
+            else None
+        )
+        season_best_ms = int(season_best_row["total_time_ms"]) if season_best_row is not None else None
+        avg_ms = int(round(mean(times)))
+        median_ms = int(round(median(times)))
+
+        average_rows.append(
+            {
+                "distance_m": distance,
+                "pb_ms": pb_ms,
+                "pb_race_id": int(pb_row["id"]),
+                "season_best_ms": season_best_ms,
+                "season_best_race_id": int(season_best_row["id"]) if season_best_row is not None else None,
+                "average_ms": avg_ms,
+                "median_ms": median_ms,
+            }
+        )
+
+        openings: list[float] = []
+        full_laps: list[float] = []
+        fades: list[float] = []
+        lap_values_by_index: dict[int, list[float]] = {}
+        for row in rows_for_distance:
+            laps = laps_from_csv(row["laps_csv"])
+            if not laps:
+                continue
+            openings.append(laps[0])
+            if len(laps) > 1:
+                split_laps = laps[1:]
+                full_laps.extend(split_laps)
+                fades.append(split_laps[-1] - min(split_laps))
+                for idx in range(1, len(laps)):
+                    lap_values_by_index.setdefault(idx, []).append(laps[idx])
+
+        if openings or full_laps:
+            split_rows.append(
+                {
+                    "distance_m": distance,
+                    "avg_opening_s": mean(openings) if openings else None,
+                    "best_opening_s": min(openings) if openings else None,
+                    "avg_lap_s": mean(full_laps) if full_laps else None,
+                    "best_lap_s": min(full_laps) if full_laps else None,
+                    "avg_fade_s": mean(fades) if fades else None,
+                    "lap_averages": [
+                        {"lap_no": idx, "avg_s": mean(values)}
+                        for idx, values in sorted(lap_values_by_index.items())
+                    ],
+                }
+            )
+
+        std_ms = int(round(pstdev(times))) if len(times) >= 2 else 0
+        range_ms = max(times) - min(times)
+        consistency_rows.append(
+            {
+                "distance_m": distance,
+                "std_dev_ms": std_ms,
+                "range_ms": range_ms,
+            }
+        )
+
+        first_row = rows_for_distance[0]
+        latest_row = rows_for_distance[-1]
+        last5 = rows_for_distance[-5:]
+        last5_avg_ms = int(round(mean(int(row["total_time_ms"]) for row in last5))) if last5 else None
+        season_avg_ms = (
+            int(round(mean(int(row["total_time_ms"]) for row in season_subset)))
+            if season_subset
+            else None
+        )
+        trend = "n.v.t."
+        if last5_avg_ms is not None and season_avg_ms is not None:
+            if last5_avg_ms <= season_avg_ms - 200:
+                trend = "verbeterend"
+            elif last5_avg_ms >= season_avg_ms + 200:
+                trend = "verslechterend"
+            else:
+                trend = "stabiel"
+
+        progress_rows.append(
+            {
+                "distance_m": distance,
+                "first_ms": int(first_row["total_time_ms"]),
+                "first_race_id": int(first_row["id"]),
+                "latest_ms": int(latest_row["total_time_ms"]),
+                "latest_race_id": int(latest_row["id"]),
+                "improvement_ms": int(latest_row["total_time_ms"]) - int(first_row["total_time_ms"]),
+                "last5_avg_ms": last5_avg_ms,
+                "season_avg_ms": season_avg_ms,
+                "trend": trend,
+            }
+        )
+
+    track_grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in sorted_timed_rows:
+        venue = (row["venue"] or "").strip()
+        if not venue:
+            continue
+        track_grouped.setdefault(venue, []).append(row)
+
+    track_rows: list[dict] = []
+    all_500eq_values: list[int] = []
+    for venue, venue_rows in track_grouped.items():
+        per_500eq = [
+            int(round((int(row["total_time_ms"]) * 500) / int(row["distance_m"])))
+            for row in venue_rows
+            if int(row["distance_m"]) > 0
+        ]
+        if not per_500eq:
+            continue
+        all_500eq_values.extend(per_500eq)
+        track_rows.append(
+            {
+                "track": venue,
+                "race_count": len(venue_rows),
+                "avg_500eq_ms": int(round(mean(per_500eq))),
+                "best_500eq_ms": min(per_500eq),
+            }
+        )
+
+    track_rows = sorted(track_rows, key=lambda item: (item["avg_500eq_ms"], item["track"].lower()))
+    overall_500eq_ms = int(round(mean(all_500eq_values))) if all_500eq_values else None
+    best_track_summary = None
+    worst_track_summary = None
+    if overall_500eq_ms is not None and track_rows:
+        best_track = min(track_rows, key=lambda item: item["avg_500eq_ms"])
+        worst_track = max(track_rows, key=lambda item: item["avg_500eq_ms"])
+        best_track_summary = {
+            "name": best_track["track"],
+            "delta_ms": best_track["avg_500eq_ms"] - overall_500eq_ms,
+        }
+        worst_track_summary = {
+            "name": worst_track["track"],
+            "delta_ms": worst_track["avg_500eq_ms"] - overall_500eq_ms,
+        }
+
+    fastest_lap = None
+    fastest_opener = None
+    for row in sorted_timed_rows:
+        laps = laps_from_csv(row["laps_csv"])
+        if not laps:
+            continue
+        opener_ms = int(round(laps[0] * 1000))
+        if fastest_opener is None or opener_ms < fastest_opener["time_ms"]:
+            fastest_opener = {
+                "time_ms": opener_ms,
+                "distance_m": int(row["distance_m"]),
+                "venue": row["venue"] or "-",
+            }
+        for lap in laps[1:]:
+            lap_ms = int(round(lap * 1000))
+            if fastest_lap is None or lap_ms < fastest_lap["time_ms"]:
+                fastest_lap = {
+                    "time_ms": lap_ms,
+                    "distance_m": int(row["distance_m"]),
+                    "venue": row["venue"] or "-",
+                }
+
+    month_counts: dict[str, int] = {}
     for row in filtered_rows:
-        if row["venue"]:
-            venues[row["venue"]] = venues.get(row["venue"], 0) + 1
+        date_value = (row["competition_date"] or "").strip()
+        if len(date_value) >= 7:
+            month_key = date_value[:7]
+            month_counts[month_key] = month_counts.get(month_key, 0) + 1
+    busiest_month = None
+    if month_counts:
+        month_key, month_count = sorted(month_counts.items(), key=lambda item: (-item[1], item[0]))[0]
+        busiest_month = {"month": month_key, "count": month_count}
 
-    favorite_venue = "-"
-    if venues:
-        favorite_venue = sorted(venues.items(), key=lambda item: (-item[1], item[0].lower()))[0][0]
+    distance_counts: dict[int, int] = {}
+    for row in filtered_rows:
+        if row["distance_m"] is None:
+            continue
+        distance_value = int(row["distance_m"])
+        distance_counts[distance_value] = distance_counts.get(distance_value, 0) + 1
+    most_skated_distance = None
+    if distance_counts:
+        distance_value, count_value = sorted(distance_counts.items(), key=lambda item: (-item[1], item[0]))[0]
+        most_skated_distance = {"distance_m": distance_value, "count": count_value}
 
-    season_summaries = summarize_seasons(rows, pr_race_ids)
-    distance_stats = build_distance_stats(filtered_rows, pr_race_ids)
-    with db() as conn:
-        goal_targets = get_goal_target_map(conn, int(current_user["id"]))
-
-    for stat in distance_stats:
-        goal_row = goal_targets.get(int(stat["distance_m"]))
-        stat["goal"] = goal_row
-        stat["goal_progress"] = build_goal_progress(goal_row, stat)
+    closest_pb_miss = None
+    best_before_by_distance: dict[int, int] = {}
+    for row in sorted_timed_rows:
+        distance_value = int(row["distance_m"])
+        total_ms = int(row["total_time_ms"])
+        prev_best = best_before_by_distance.get(distance_value)
+        if prev_best is not None and total_ms > prev_best:
+            miss_ms = total_ms - prev_best
+            if closest_pb_miss is None or miss_ms < closest_pb_miss["delta_ms"]:
+                closest_pb_miss = {
+                    "delta_ms": miss_ms,
+                    "distance_m": distance_value,
+                    "venue": row["venue"] or "-",
+                }
+        if prev_best is None or total_ms < prev_best:
+            best_before_by_distance[distance_value] = total_ms
 
     return render(
         request,
@@ -1935,16 +2160,28 @@ def stats_page(
         selected_season=selected_season,
         distance_options=distance_options,
         selected_distance=selected_distance,
-        season_summaries=season_summaries,
-        distance_stats=distance_stats,
-        stats_summary={
+        basic_stats={
             "competition_count": len({row["competition_id"] for row in filtered_rows}),
-            "race_count": len(timed_rows),
-            "distance_count": len({row["distance_m"] for row in timed_rows}),
-            "split_count": len(split_rows),
-            "pr_count": len([row for row in timed_rows if int(row["id"]) in pr_race_ids]),
-            "favorite_venue": favorite_venue,
+            "race_count": len(filtered_rows),
+            "total_km": total_distance_km,
+            "pb_count": len(pb_race_ids),
+            "sb_count": len(sb_race_ids),
         },
+        average_rows=average_rows,
+        split_rows=split_rows,
+        consistency_rows=consistency_rows,
+        track_rows=track_rows,
+        best_track_summary=best_track_summary,
+        worst_track_summary=worst_track_summary,
+        progress_rows=progress_rows,
+        fun_stats={
+            "closest_pb_miss": closest_pb_miss,
+            "fastest_lap": fastest_lap,
+            "fastest_opener": fastest_opener,
+            "busiest_month": busiest_month,
+            "most_skated_distance": most_skated_distance,
+        },
+        sb_reference_season=sb_reference_season,
         fmt_ms=fmt_ms,
         fmt_sec=fmt_sec,
         fmt_date=fmt_date_ymd_to_dmy,
