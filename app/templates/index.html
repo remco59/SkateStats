@@ -2,12 +2,73 @@
 {% block content %}
   <h1>Overzicht</h1>
 
+  {% if osta_notice == "ignored" %}
+    <section class="card">
+      <div class="message message-success">OSTA-competitie genegeerd. Deze melding wordt niet meer getoond.</div>
+    </section>
+  {% elif osta_notice == "imported" %}
+    <section class="card">
+      <div class="message message-success">Nieuwe OSTA-data geimporteerd: {{ osta_notice_count }} ritten toegevoegd.</div>
+    </section>
+  {% elif osta_notice == "nonew" %}
+    <section class="card">
+      <div class="message message-warning">Er is op dit moment geen nieuwe OSTA-data om te importeren.</div>
+    </section>
+  {% elif osta_notice in ["ignore_error", "import_error"] %}
+    <section class="card">
+      <div class="message message-warning">Actie mislukt. Probeer het opnieuw via de importpagina.</div>
+    </section>
+  {% endif %}
+
   {% if competition_count == 0 and race_count == 0 %}
     <section class="card">
       <div class="message message-warning">
         Er is nog geen data beschikbaar.
-        <a href="/import/pdf">Importeer via OSTA of SpeedSkatingResults</a>
+        <a href="/import">Importeer via OSTA of SpeedSkatingResults</a>
         of <a href="/races/new">voeg handmatig een rit toe</a>.
+      </div>
+    </section>
+  {% endif %}
+
+  {% if osta_detection.error_message %}
+    <section class="card">
+      <div class="message message-warning">{{ osta_detection.error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_detection.available|length > 0 %}
+    <section class="card card-warning-subtle">
+      <h2>Nieuwe OSTA-data beschikbaar</h2>
+      <p class="muted">Voor {{ osta_detection.search_name }} (seizoen {{ osta_detection.season }}) zijn {{ osta_detection.available|length }} nieuwe competities gevonden.</p>
+      <table>
+        <thead>
+          <tr><th>Wedstrijd</th><th>Datum</th><th>Ritten</th><th>Actie</th></tr>
+        </thead>
+        <tbody>
+          {% for item in osta_detection.available %}
+            <tr>
+              <td>{{ item.name }}</td>
+              <td class="mono">{{ fmt_date(item.date) }}</td>
+              <td class="mono">{{ item.race_count }}</td>
+              <td>
+                <form method="post" action="/osta/detection/ignore" class="inline-form">
+                  <input type="hidden" name="comp_signature" value="{{ item.signature }}" />
+                  <input type="hidden" name="comp_name" value="{{ item.name }}" />
+                  <input type="hidden" name="comp_date" value="{{ item.date }}" />
+                  <input type="hidden" name="pid" value="{{ item.pid }}" />
+                  <input type="hidden" name="race_count" value="{{ item.race_count }}" />
+                  <button type="submit" class="btn-secondary">Negeer</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="row-actions" style="margin-top:10px;">
+        <form method="post" action="/osta/detection/import" class="inline-form">
+          <button type="submit">Importeer alles</button>
+        </form>
+        <a href="/import" class="btn">Naar importpagina</a>
       </div>
     </section>
   {% endif %}

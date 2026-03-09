@@ -64,7 +64,7 @@
     {% if current_user %}
       <div class="fab-menu" data-open="false">
         <div class="fab-actions">
-          <a class="fab-action" href="/import/pdf">Importeren</a>
+          <a class="fab-action" href="/import">Importeren</a>
           <a class="fab-action" href="/competitions/new">Wedstrijd toevoegen</a>
           <a class="fab-action" href="/races/new">Rit toevoegen</a>
         </div>
@@ -124,12 +124,48 @@
             "main .split-chart-wrap"
           ].join(", ");
           const revealItems = Array.from(document.querySelectorAll(revealSelector));
-          revealItems.forEach((element, index) => {
+          let revealIndex = 0;
+
+          revealItems.forEach((element) => {
             element.classList.add("js-reveal");
-            element.style.setProperty("--enter-index", String(index));
+            element.style.setProperty("--enter-index", "0");
           });
+
+          const revealElement = (element) => {
+            if (element.classList.contains("is-inview")) {
+              return;
+            }
+            element.style.setProperty("--enter-index", String(revealIndex));
+            revealIndex += 1;
+            element.classList.add("is-inview");
+          };
+
           window.requestAnimationFrame(() => {
             body.classList.add("motion-ready");
+
+            if ("IntersectionObserver" in window) {
+              const observer = new IntersectionObserver((entries, obs) => {
+                entries.forEach((entry) => {
+                  if (!entry.isIntersecting) {
+                    return;
+                  }
+                  revealElement(entry.target);
+                  obs.unobserve(entry.target);
+                });
+              }, {
+                root: null,
+                threshold: 0.18,
+                rootMargin: "0px 0px -8% 0px"
+              });
+
+              revealItems.forEach((element) => {
+                observer.observe(element);
+              });
+            } else {
+              revealItems.forEach((element) => {
+                revealElement(element);
+              });
+            }
           });
         }
 
@@ -196,9 +232,20 @@
 
         const navToggle = document.querySelector(".nav-toggle");
         const mobileNav = document.getElementById("mobile-nav");
+        const topbar = document.querySelector(".topbar");
         const fabMenu = document.querySelector(".fab-menu");
         const fabToggle = document.querySelector(".fab-toggle");
         const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+        function syncTopbarHeight() {
+          if (!topbar) {
+            return;
+          }
+          document.documentElement.style.setProperty("--topbar-height", `${topbar.offsetHeight}px`);
+        }
+
+        syncTopbarHeight();
+        window.addEventListener("resize", syncTopbarHeight);
 
         if (navToggle && mobileNav) {
           function syncMobileNav(open) {

@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Import preview ({{ source_label }})</h1>
+
+  {% if preview_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ preview_error_message }}</div>
+    </section>
+  {% endif %}
+
+  <form method="post" action="/import/preview/commit" class="form" id="import-preview-form">
+    <input type="hidden" name="batch_id" value="{{ batch_id }}" />
+
+    {% set cards = [("new", "Nieuwe data", card_new), ("blacklist", "Blacklist data", card_blacklist), ("overlap", "Overlappende data", card_overlap)] %}
+    {% for card_key, card_title, card_items in cards %}
+      <section class="card">
+        <h2>{{ card_title }} ({{ card_items|length }})</h2>
+        {% if card_items|length > 0 %}
+          <div class="row-actions">
+            <button type="button" class="btn-secondary js-toggle-card" data-target="{{ card_key }}">Selecteer alles</button>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Wedstrijd</th><th>Datum</th><th>Locatie</th><th>Ritten</th></tr>
+            </thead>
+            <tbody>
+              {% for item in card_items %}
+                <tr>
+                  <td>
+                    <details class="import-preview-details">
+                      <summary>{{ item.competition.name }}</summary>
+                      <table>
+                        <thead>
+                          <tr><th></th><th>Afstand</th><th>Eindtijd</th><th>Baan</th><th>Tegenstander</th></tr>
+                        </thead>
+                        <tbody>
+                          {% for race in item.results %}
+                            <tr>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  name="selected_races"
+                                  value="{{ item.id }}:{{ loop.index0 }}"
+                                  data-card="{{ card_key }}"
+                                  {% if item.selected_default == 1 %}checked{% endif %}
+                                />
+                              </td>
+                              <td class="mono">{{ race.distance_m }}m</td>
+                              <td class="mono">{% if race.dnf == 1 %}DNF{% else %}{{ fmt_ms(race.total_time_ms) }}{% endif %}</td>
+                              <td>{{ race.lane or "-" }}</td>
+                              <td>{{ race.opponent or "-" }}</td>
+                            </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+                    </details>
+                  </td>
+                  <td class="mono">{{ fmt_date(item.competition.date) }}</td>
+                  <td>{{ item.competition.venue or "-" }}</td>
+                  <td class="mono">{{ item.race_count }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">Geen wedstrijden in deze kaart.</p>
+        {% endif %}
+      </section>
+    {% endfor %}
+
+    <section class="card">
+      <div class="row-actions">
+        <button type="submit" name="action" value="import">Importeren (overschrijven)</button>
+        <button
+          type="submit"
+          name="action"
+          value="add"
+          class="btn-secondary"
+          id="import-preview-add-button"
+          hidden
+        >
+          Toevoegen (nieuwe wedstrijd)
+        </button>
+        <button type="submit" name="action" value="cancel" class="btn-secondary">Annuleren</button>
+      </div>
+    </section>
+  </form>
+
+  <script>
+    (function () {
+      const addButton = document.getElementById("import-preview-add-button");
+
+      function updateAddButtonVisibility() {
+        if (!addButton) {
+          return;
+        }
+        const overlapChecked = Array.from(
+          document.querySelectorAll('input[type="checkbox"][data-card="overlap"][name="selected_races"]')
+        ).some((checkbox) => checkbox.checked);
+        addButton.hidden = !overlapChecked;
+      }
+
+      function updateButtonLabel(button) {
+        const target = button.dataset.target || "";
+        const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"][data-card="' + target + '"]'));
+        if (!checkboxes.length) {
+          return;
+        }
+        const allSelected = checkboxes.every((checkbox) => checkbox.checked);
+        button.textContent = allSelected ? "Deselecteer alles" : "Selecteer alles";
+      }
+
+      document.querySelectorAll(".js-toggle-card").forEach((button) => {
+        updateButtonLabel(button);
+
+        button.addEventListener("click", function () {
+          const target = this.dataset.target || "";
+          const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"][data-card="' + target + '"]'));
+          if (!checkboxes.length) {
+            return;
+          }
+          const allSelected = checkboxes.every((checkbox) => checkbox.checked);
+          checkboxes.forEach((checkbox) => {
+            checkbox.checked = !allSelected;
+          });
+          updateButtonLabel(this);
+          updateAddButtonVisibility();
+        });
+
+        const target = button.dataset.target || "";
+        document.querySelectorAll('input[type="checkbox"][data-card="' + target + '"]').forEach((checkbox) => {
+          checkbox.addEventListener("change", function () {
+            updateButtonLabel(button);
+            updateAddButtonVisibility();
+          });
+        });
+      });
+
+      updateAddButtonVisibility();
+    })();
+  </script>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>OSTA profielkeuze</h1>
+
+  <section class="card">
+    <p class="muted">
+      Er zijn meerdere OSTA-profielen gevonden voor <strong>{{ osta_search_name }}</strong>.
+      Kies welke profielen je wilt meenemen in de import-check.
+    </p>
+  </section>
+
+  {% if osta_profile_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ osta_profile_error_message }}</div>
+    </section>
+  {% endif %}
+
+  <form method="post" action="/import/osta/select" class="form" id="osta-profile-select-form">
+    <input type="hidden" name="osta_search_name" value="{{ osta_search_name }}" />
+    <input type="hidden" name="osta_season" value="{{ osta_season }}" />
+
+    <section class="card">
+      <h2>Beschikbare profielen ({{ osta_candidates|length }})</h2>
+      <div class="row-actions">
+        <button type="button" class="btn-secondary" id="select-all-osta-profiles">Selecteer alles</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr><th></th><th>Naam</th><th>Categorie</th><th>Seizoenen</th><th>Vereniging</th><th>PID</th></tr>
+        </thead>
+        <tbody>
+          {% for item in osta_candidates %}
+            <tr>
+              <td><input type="checkbox" name="selected_pids" value="{{ item.pid }}" /></td>
+              <td>{{ item.name }}</td>
+              <td>{{ item.category or "-" }}</td>
+              <td>{{ item.seasons or "-" }}</td>
+              <td>{{ item.club or "-" }}</td>
+              <td class="mono">{{ item.pid }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <div class="row-actions">
+        <button type="submit">Ga naar import check</button>
+        <a href="/import" class="btn-secondary">Annuleren</a>
+      </div>
+    </section>
+  </form>
+
+  <script>
+    (function () {
+      const button = document.getElementById("select-all-osta-profiles");
+      if (!button) {
+        return;
+      }
+      button.addEventListener("click", function () {
+        document.querySelectorAll('input[type="checkbox"][name="selected_pids"]').forEach((checkbox) => {
+          checkbox.checked = true;
+        });
+      });
+    })();
+  </script>
+{% endblock %}

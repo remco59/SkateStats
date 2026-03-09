@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Importeren</h1>
+
+  <section class="card">
+    <p class="muted">
+      De import zoekt alle ritten voor <strong>{{ upload_owner_name }}</strong>
+      en toont eerst een preview. Daar kies je per kaart welke data je wilt importeren.
+      Je kunt hier resultaten ophalen uit SpeedSkatingResults, OSTA en PDF.
+    </p>
+  </section>
+
+  {% if ssr_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ ssr_error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if ssr_success_message %}
+    <section class="card">
+      <div class="hint hint-success">{{ ssr_success_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ osta_error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_success_message %}
+    <section class="card">
+      <div class="hint hint-success">{{ osta_success_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if pdf_error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ pdf_error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if pdf_success_message %}
+    <section class="card">
+      <div class="hint hint-success">{{ pdf_success_message }}</div>
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>PDF uitslag (losse wedstrijd)</h2>
+    <form method="post" action="/import/pdf" class="form" enctype="multipart/form-data">
+      <div class="hint">
+        Upload een uitslag-PDF in hetzelfde format als de clubwedstrijd-uitslagen.
+        Alleen ritten voor <strong>{{ upload_owner_name }}</strong> worden geimporteerd.
+      </div>
+
+      <label>Uitslag PDF
+        <input type="file" name="pdf_file" accept="application/pdf,.pdf" required />
+      </label>
+
+      <button type="submit">Importeer losse wedstrijd uit PDF</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>OSTA</h2>
+    <form method="post" action="/import/osta" class="form">
+
+      <div class="hint">
+        Deze import haalt wedstrijddagen en ritdetails op van OSTA, inclusief rondetijden uit de ritpagina.
+        Bestaande wedstrijden op dezelfde datum worden standaard geüpdatet met OSTA-rondetijden.
+        OSTA ondersteunt geen wedstrijden buiten Nederland, dus buitenlandse ritten worden genegeerd.
+      </div>
+
+      <div class="grid2">
+        <label>Naam
+          <input name="osta_search_name" value="{{ osta_search_name }}" placeholder="Volledige naam" required />
+          <span class="hint">Zoeknaam zoals op osta.nl. Als PID bekend is, is dit alleen nog ter controle.</span>
+        </label>
+        <label>PID (optioneel)
+          <input name="osta_pid" value="{{ osta_pid }}" placeholder="bijv. 86651033-b5c2-4819-2162-08ddeb0685e4" />
+          <span class="hint">Leeg laten om eerst via naam te zoeken.</span>
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Seizoen
+          <input name="osta_season" value="{{ osta_season }}" placeholder="bijv. 2025 of ALL" required />
+          <span class="hint">Voer het startjaar van het seizoen in. Gebruik <strong>ALL</strong> voor alle seizoenen.</span>
+        </label>
+      </div>
+
+      <button type="submit">Importeer uit OSTA</button>
+
+      <div class="hint">
+        Bron: <a href="https://www.osta.nl/" target="_blank" rel="noreferrer">OSTA</a>.
+      </div>
+
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>SpeedSkatingResults</h2>
+    <form method="post" action="/import/speedskatingresults" class="form">
+
+       <div class="hint">
+        Deze import haalt wedstrijddagen en ritdetails op van SpeedSkatingResults, exclusief rondetijden.
+        Slaat een hele wedstrijddag over zodra er al een wedstrijd bestaat op die datum.
+      </div>
+
+      <div class="grid2">
+        <label>Voornaam
+          <input name="ssr_given_name" value="{{ ssr_given_name }}" placeholder="bijv. Remco" />
+        </label>
+        <label>Achternaam
+          <input name="ssr_family_name" value="{{ ssr_family_name }}" placeholder="bijv. Land" />
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Skater ID
+          <input name="ssr_skater_id" value="{{ ssr_skater_id }}" placeholder="bijv. 121536" />
+          <span class="hint">Optioneel. Als dit leeg is, wordt eerst lookup op naam gedaan.</span>
+        </label>
+        <label>Seizoen
+          <input name="ssr_season" value="{{ ssr_season }}" placeholder="bijv. 2025" required />
+          <span class="hint">Voer het startjaar van het seizoen in.</span>
+        </label>
+      </div>
+
+      <button type="submit">Importeer uit SpeedSkatingResults</button>
+
+      <div class="hint">
+        Bron: <a href="https://speedskatingresults.com/index.php?p=200" target="_blank" rel="noreferrer">SpeedSkatingResults API</a>.
+      </div>
+
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Blacklist ({{ blacklist_items|length }})</h2>
+    <p class="muted">Items in deze lijst worden in de import-preview direct als blacklist gemarkeerd.</p>
+
+    {% if blacklist_error_message %}
+      <div class="hint hint-warning">{{ blacklist_error_message }}</div>
+    {% endif %}
+    {% if blacklist_success_message %}
+      <div class="hint hint-success">{{ blacklist_success_message }}</div>
+    {% endif %}
+
+    {% if blacklist_items|length > 0 %}
+      <form method="post" action="/import/blacklist/remove" class="form" id="import-blacklist-form">
+        <div class="row-actions">
+          <button type="button" class="btn-secondary" id="import-blacklist-toggle">Selecteer alles</button>
+          <button type="submit" class="btn-secondary">Haal geselecteerde van blacklist</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr><th></th><th>Wedstrijd</th><th>Datum</th><th>PID</th><th>Ritten</th></tr>
+          </thead>
+          <tbody>
+            {% for item in blacklist_items %}
+              <tr>
+                <td>
+                  <input type="checkbox" name="selected_signatures" value="{{ item.comp_signature }}" />
+                </td>
+                <td>{{ item.comp_name }}</td>
+                <td class="mono">{{ fmt_date(item.comp_date) }}</td>
+                <td class="mono">{{ item.pid or "-" }}</td>
+                <td class="mono">{{ item.race_count }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </form>
+    {% else %}
+      <p class="muted">Geen blacklist-items.</p>
+    {% endif %}
+  </section>
+
+  <script>
+    (function () {
+      const toggleButton = document.getElementById("import-blacklist-toggle");
+      if (!toggleButton) {
+        return;
+      }
+      const checkboxes = Array.from(
+        document.querySelectorAll('#import-blacklist-form input[type="checkbox"][name="selected_signatures"]')
+      );
+      function updateLabel() {
+        if (!checkboxes.length) {
+          return;
+        }
+        const allSelected = checkboxes.every((checkbox) => checkbox.checked);
+        toggleButton.textContent = allSelected ? "Deselecteer alles" : "Selecteer alles";
+      }
+      toggleButton.addEventListener("click", function () {
+        if (!checkboxes.length) {
+          return;
+        }
+        const allSelected = checkboxes.every((checkbox) => checkbox.checked);
+        checkboxes.forEach((checkbox) => {
+          checkbox.checked = !allSelected;
+        });
+        updateLabel();
+      });
+      checkboxes.forEach((checkbox) => {
+        checkbox.addEventListener("change", updateLabel);
+      });
+      updateLabel();
+    })();
+  </script>
+{% endblock %}

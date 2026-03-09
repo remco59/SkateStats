@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sqlite3
+import uuid
 from datetime import date, datetime, timedelta
 from html import escape
 from statistics import mean, median, pstdev
@@ -17,6 +18,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import urlopen
 from xml.etree import ElementTree
 
+import pdfplumber
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -286,10 +288,43 @@ def init_db() -> None:
               UNIQUE(user_id, distance_m)
             );
 
+            CREATE TABLE IF NOT EXISTS osta_monitor_config (
+              user_id INTEGER PRIMARY KEY,
+              search_name TEXT NOT NULL,
+              pid TEXT NOT NULL DEFAULT '',
+              season TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS osta_import_blacklist (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              comp_signature TEXT NOT NULL,
+              comp_name TEXT NOT NULL,
+              comp_date TEXT NOT NULL,
+              pid TEXT,
+              race_count INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
+              UNIQUE(user_id, comp_signature)
+            );
+
+            CREATE TABLE IF NOT EXISTS import_preview_batch (
+              id TEXT PRIMARY KEY,
+              user_id INTEGER NOT NULL,
+              source TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_race_competition ON race(competition_id);
             CREATE INDEX IF NOT EXISTS idx_race_skater ON race(skater_id);
             CREATE INDEX IF NOT EXISTS idx_race_distance ON race(distance_m);
             CREATE INDEX IF NOT EXISTS idx_goal_target_user_distance ON goal_target(user_id, distance_m);
+            CREATE INDEX IF NOT EXISTS idx_osta_blacklist_user ON osta_import_blacklist(user_id);
+            CREATE INDEX IF NOT EXISTS idx_import_preview_user ON import_preview_batch(user_id);
             """
         )
         migrate_db(conn)
@@ -308,6 +343,45 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     goal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(goal_target)").fetchall()}
     if goal_columns and "notes" not in goal_columns:
         conn.execute("ALTER TABLE goal_target ADD COLUMN notes TEXT")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS osta_monitor_config (
+          user_id INTEGER PRIMARY KEY,
+          search_name TEXT NOT NULL,
+          pid TEXT NOT NULL DEFAULT '',
+          season TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS osta_import_blacklist (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          comp_signature TEXT NOT NULL,
+          comp_name TEXT NOT NULL,
+          comp_date TEXT NOT NULL,
+          pid TEXT,
+          race_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
+          UNIQUE(user_id, comp_signature)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_osta_blacklist_user ON osta_import_blacklist(user_id);
+
+        CREATE TABLE IF NOT EXISTS import_preview_batch (
+          id TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_import_preview_user ON import_preview_batch(user_id);
+        """
+    )
 
 
 def now_iso() -> str:
@@ -1042,6 +1116,269 @@ def build_goal_progress(goal_row: Optional[sqlite3.Row], stat: dict) -> list[dic
     return progress
 
 
+def format_delta(delta_ms: Optional[int]) -> str:
+    if delta_ms is None:
+        return "-"
+    sign = "+" if delta_ms > 0 else ""
+    return f"{sign}{fmt_ms(delta_ms)}"
+
+
+def build_vergelijkings_samenvatting(
+    total_delta_ms: Optional[int],
+    opening_delta_ms: Optional[int],
+    slot_delta_ms: Optional[int],
+    verval_delta_ms: Optional[int],
+    split_deltas_ms: List[int],
+) -> str:
+    if total_delta_ms is None:
+        return "Onvoldoende data om een duidelijke vergelijking te maken."
+
+    if split_deltas_ms:
+        faster_count = len([value for value in split_deltas_ms if value < 0])
+        faster_ratio = faster_count / len(split_deltas_ms)
+    else:
+        faster_ratio = 0.0
+
+    if faster_ratio >= 0.75 and total_delta_ms <= -300:
+        return "Sneller over vrijwel de hele rit."
+    if opening_delta_ms is not None and verval_delta_ms is not None and opening_delta_ms <= -150 and verval_delta_ms >= 250:
+        return "Snellere opening, maar veel verval in de slotfase."
+    if opening_delta_ms is not None and slot_delta_ms is not None and opening_delta_ms >= 150 and slot_delta_ms <= -120:
+        return "Rustigere start met een sterkere finish."
+    if total_delta_ms <= -250:
+        return "Vergelijkingsrit was overall sneller met stabielere opbouw."
+    if total_delta_ms >= 250:
+        return "Vergelijkingsrit verloor vooral tijd in meerdere segmenten."
+    return "Kleine verschillen: het tempoverloop bepaalt hier het resultaat."
+
+
+def get_pacing_labels(laps: List[float], distance_m: int) -> List[str]:
+    if not laps:
+        return []
+
+    per_400 = per400_times(laps, distance_m)
+    if not per_400:
+        return []
+
+    labels: List[str] = []
+    first = per_400[0]
+    last = per_400[-1]
+    avg = sum(per_400) / len(per_400)
+    fade = last - first
+
+    if first <= avg - 0.30:
+        labels.append("Snelle opening")
+    elif first >= avg + 0.30:
+        labels.append("Controleerde start")
+    else:
+        labels.append("Gelijkmatige opening")
+
+    if last <= avg - 0.15:
+        labels.append("Sterke slotronde")
+    elif last >= avg + 0.25:
+        labels.append("Zwakke slotronde")
+
+    if fade >= 0.50:
+        labels.append("Groot verval")
+    elif fade <= 0.15:
+        labels.append("Gelijkmatige opbouw")
+
+    seen: set[str] = set()
+    unique_labels: List[str] = []
+    for label in labels:
+        if label in seen:
+            continue
+        seen.add(label)
+        unique_labels.append(label)
+    return unique_labels
+
+
+def get_sterkste_en_zwakste_onderdelen(split_rows: List[dict]) -> dict:
+    valid_rows = [row for row in split_rows if row.get("split_delta_ms") is not None]
+    if not valid_rows:
+        return {"sterkste": None, "zwakste": None}
+
+    sterkste = min(valid_rows, key=lambda row: int(row["split_delta_ms"]))
+    zwakste = max(valid_rows, key=lambda row: int(row["split_delta_ms"]))
+    return {"sterkste": sterkste, "zwakste": zwakste}
+
+
+def build_split_delta_series(split_rows: List[dict], width: int = 620, height: int = 190) -> Optional[dict]:
+    values: List[int] = []
+    labels: List[str] = []
+    for row in split_rows:
+        delta_ms = row.get("split_delta_ms")
+        if delta_ms is None:
+            continue
+        values.append(int(delta_ms))
+        labels.append(str(row["index"]))
+
+    if not values:
+        return None
+
+    top_padding = 18
+    right_padding = 18
+    bottom_padding = 30
+    left_padding = 52
+    plot_width = max(width - left_padding - right_padding, 10)
+    plot_height = max(height - top_padding - bottom_padding, 10)
+
+    min_v = min(min(values), 0)
+    max_v = max(max(values), 0)
+    span = max(max_v - min_v, 120)
+    x_step = plot_width / max(len(values) - 1, 1)
+
+    points: List[str] = []
+    circles: List[dict] = []
+    y_ticks: List[dict] = []
+    x_ticks: List[dict] = []
+
+    for idx, value in enumerate(values):
+        x = left_padding + (idx * x_step if len(values) > 1 else plot_width / 2)
+        y = top_padding + plot_height - (((value - min_v) / span) * plot_height)
+        points.append(f"{x:.1f},{y:.1f}")
+        circles.append({"x": f"{x:.1f}", "y": f"{y:.1f}", "label": labels[idx], "value": format_delta(value)})
+        x_ticks.append({"x": f"{x:.1f}", "label": labels[idx]})
+
+    for idx in range(4):
+        tick_value = min_v + ((span / 3) * idx)
+        tick_y = top_padding + plot_height - (((tick_value - min_v) / span) * plot_height)
+        y_ticks.append({"y": f"{tick_y:.1f}", "label": format_delta(int(round(tick_value)))})
+
+    zero_y = top_padding + plot_height - (((0 - min_v) / span) * plot_height)
+    return {
+        "width": width,
+        "height": height,
+        "points": " ".join(points),
+        "circles": circles,
+        "x_ticks": x_ticks,
+        "y_ticks": y_ticks,
+        "left_padding": left_padding,
+        "right_padding": right_padding,
+        "baseline_y": top_padding + plot_height,
+        "zero_y": f"{zero_y:.1f}",
+    }
+
+
+def build_cumulative_delta_series(split_rows: List[dict], width: int = 620, height: int = 210) -> Optional[dict]:
+    values: List[int] = []
+    labels: List[str] = []
+    running = 0
+    for row in split_rows:
+        delta_ms = row.get("split_delta_ms")
+        if delta_ms is None:
+            continue
+        running += int(delta_ms)
+        values.append(running)
+        labels.append(str(row["index"]))
+
+    if not values:
+        return None
+
+    top_padding = 18
+    right_padding = 18
+    bottom_padding = 30
+    left_padding = 52
+    plot_width = max(width - left_padding - right_padding, 10)
+    plot_height = max(height - top_padding - bottom_padding, 10)
+
+    min_v = min(min(values), 0)
+    max_v = max(max(values), 0)
+    span = max(max_v - min_v, 120)
+    x_step = plot_width / max(len(values) - 1, 1)
+
+    points: List[str] = []
+    circles: List[dict] = []
+    y_ticks: List[dict] = []
+    x_ticks: List[dict] = []
+
+    for idx, value in enumerate(values):
+        x = left_padding + (idx * x_step if len(values) > 1 else plot_width / 2)
+        y = top_padding + plot_height - (((value - min_v) / span) * plot_height)
+        points.append(f"{x:.1f},{y:.1f}")
+        circles.append({"x": f"{x:.1f}", "y": f"{y:.1f}", "label": labels[idx], "value": format_delta(value)})
+        x_ticks.append({"x": f"{x:.1f}", "label": labels[idx]})
+
+    for idx in range(4):
+        tick_value = min_v + ((span / 3) * idx)
+        tick_y = top_padding + plot_height - (((tick_value - min_v) / span) * plot_height)
+        y_ticks.append({"y": f"{tick_y:.1f}", "label": format_delta(int(round(tick_value)))})
+
+    zero_y = top_padding + plot_height - (((0 - min_v) / span) * plot_height)
+    return {
+        "width": width,
+        "height": height,
+        "points": " ".join(points),
+        "circles": circles,
+        "x_ticks": x_ticks,
+        "y_ticks": y_ticks,
+        "left_padding": left_padding,
+        "right_padding": right_padding,
+        "baseline_y": top_padding + plot_height,
+        "zero_y": f"{zero_y:.1f}",
+    }
+
+
+def build_lap_overlay_series(base_laps: List[float], compare_laps: List[float], width: int = 620, height: int = 240) -> Optional[dict]:
+    if not base_laps and not compare_laps:
+        return None
+
+    max_len = max(len(base_laps), len(compare_laps))
+    if max_len == 0:
+        return None
+
+    all_values = base_laps + compare_laps
+    min_v = min(all_values)
+    max_v = max(all_values)
+
+    top_padding = 18
+    right_padding = 18
+    bottom_padding = 30
+    left_padding = 42
+    plot_width = max(width - left_padding - right_padding, 10)
+    plot_height = max(height - top_padding - bottom_padding, 10)
+    span = max(max_v - min_v, 0.25)
+    x_step = plot_width / max(max_len - 1, 1)
+
+    def map_series(laps: List[float]) -> tuple[str, List[dict]]:
+        points: List[str] = []
+        circles: List[dict] = []
+        for idx, value in enumerate(laps):
+            x = left_padding + (idx * x_step if max_len > 1 else plot_width / 2)
+            y = top_padding + plot_height - (((value - min_v) / span) * plot_height)
+            points.append(f"{x:.1f},{y:.1f}")
+            circles.append({"x": f"{x:.1f}", "y": f"{y:.1f}", "label": str(idx + 1), "time": f"{value:.2f}"})
+        return " ".join(points), circles
+
+    base_points, base_circles = map_series(base_laps)
+    compare_points, compare_circles = map_series(compare_laps)
+    y_ticks: List[dict] = []
+    x_ticks: List[dict] = []
+
+    for idx in range(4):
+        tick_value = min_v + ((span / 3) * idx)
+        tick_y = top_padding + plot_height - (((tick_value - min_v) / span) * plot_height)
+        y_ticks.append({"y": f"{tick_y:.1f}", "label": f"{tick_value:.2f}"})
+
+    for idx in range(max_len):
+        x = left_padding + (idx * x_step if max_len > 1 else plot_width / 2)
+        x_ticks.append({"x": f"{x:.1f}", "label": str(idx + 1)})
+
+    return {
+        "width": width,
+        "height": height,
+        "left_padding": left_padding,
+        "right_padding": right_padding,
+        "baseline_y": top_padding + plot_height,
+        "y_ticks": y_ticks,
+        "x_ticks": x_ticks,
+        "base_points": base_points,
+        "base_circles": base_circles,
+        "compare_points": compare_points,
+        "compare_circles": compare_circles,
+    }
+
+
 def build_comparison_context(base_row: sqlite3.Row, compare_row: Optional[sqlite3.Row]) -> Optional[dict]:
     if compare_row is None:
         return None
@@ -1053,33 +1390,49 @@ def build_comparison_context(base_row: sqlite3.Row, compare_row: Optional[sqlite
     base_per_400 = per400_times(base_laps, int(base_row["distance_m"]))
     compare_per_400 = per400_times(compare_laps, int(compare_row["distance_m"]))
 
+    base_segments = segment_distances(int(base_row["distance_m"]), len(base_laps))
+    compare_segments = segment_distances(int(compare_row["distance_m"]), len(compare_laps))
     split_comparison: list[dict] = []
     row_count = max(len(base_laps), len(compare_laps))
+    cumulative_delta_ms = 0
     for idx in range(row_count):
         base_split = base_laps[idx] if idx < len(base_laps) else None
         compare_split = compare_laps[idx] if idx < len(compare_laps) else None
         base_400 = base_per_400[idx] if idx < len(base_per_400) else None
         compare_400 = compare_per_400[idx] if idx < len(compare_per_400) else None
+        split_delta_ms = None if base_split is None or compare_split is None else int(round((compare_split - base_split) * 1000))
+        eq_delta_ms = None if base_400 is None or compare_400 is None else int(round((compare_400 - base_400) * 1000))
+        distance_m = base_segments[idx] if idx < len(base_segments) else (compare_segments[idx] if idx < len(compare_segments) else None)
+        cumulative_delta_value = None
+        if split_delta_ms is not None:
+            cumulative_delta_ms += split_delta_ms
+            cumulative_delta_value = cumulative_delta_ms
         split_comparison.append(
             {
                 "index": idx + 1,
+                "distance_m": distance_m,
                 "base_split": base_split,
                 "compare_split": compare_split,
-                "split_delta_ms": None if base_split is None or compare_split is None else int(round((compare_split - base_split) * 1000)),
+                "split_delta_ms": split_delta_ms,
+                "cumulative_delta_ms": cumulative_delta_value,
                 "base_400": base_400,
                 "compare_400": compare_400,
-                "eq_delta_ms": None if base_400 is None or compare_400 is None else int(round((compare_400 - base_400) * 1000)),
+                "eq_delta_ms": eq_delta_ms,
             }
         )
+
+    total_delta_ms = None
+    if base_row["total_time_ms"] is not None and compare_row["total_time_ms"] is not None:
+        total_delta_ms = int(compare_row["total_time_ms"]) - int(base_row["total_time_ms"])
+    opening_delta_ms = None if not base_laps or not compare_laps else int(round((compare_laps[0] - base_laps[0]) * 1000))
+    slot_delta_ms = None if not base_laps or not compare_laps else int(round((compare_laps[-1] - base_laps[-1]) * 1000))
+    verval_delta_ms = None
+    if base_metrics["fade_400eq"] is not None and compare_metrics["fade_400eq"] is not None:
+        verval_delta_ms = int(round((compare_metrics["fade_400eq"] - base_metrics["fade_400eq"]) * 1000))
 
     summary_items = [
         ("Totale tijd", base_row["total_time_ms"], compare_row["total_time_ms"]),
         ("Opening", round(base_laps[0] * 1000) if base_laps else None, round(compare_laps[0] * 1000) if compare_laps else None),
-        (
-            "Gem. 400-eq",
-            round(base_metrics["avg_400"] * 1000) if base_metrics["avg_400"] is not None else None,
-            round(compare_metrics["avg_400"] * 1000) if compare_metrics["avg_400"] is not None else None,
-        ),
         (
             "Laatste 400-eq",
             round(base_metrics["last_400eq"] * 1000) if base_metrics["last_400eq"] is not None else None,
@@ -1103,10 +1456,43 @@ def build_comparison_context(base_row: sqlite3.Row, compare_row: Optional[sqlite
             }
         )
 
+    split_deltas_ms = [int(row["split_delta_ms"]) for row in split_comparison if row["split_delta_ms"] is not None]
+    samenvatting_tekst = build_vergelijkings_samenvatting(
+        total_delta_ms=total_delta_ms,
+        opening_delta_ms=opening_delta_ms,
+        slot_delta_ms=slot_delta_ms,
+        verval_delta_ms=verval_delta_ms,
+        split_deltas_ms=split_deltas_ms,
+    )
+    pacing_basis = get_pacing_labels(base_laps, int(base_row["distance_m"]))
+    pacing_vergelijking = get_pacing_labels(compare_laps, int(compare_row["distance_m"]))
+    onderdelen = get_sterkste_en_zwakste_onderdelen(split_comparison)
+
     return {
         "race": compare_row,
         "summary": summary,
         "splits": split_comparison,
+        "highlights": {
+            "total_delta_ms": total_delta_ms,
+            "opening_delta_ms": opening_delta_ms,
+            "slot_delta_ms": slot_delta_ms,
+            "verval_delta_ms": verval_delta_ms,
+        },
+        "samenvatting_tekst": samenvatting_tekst,
+        "delta_chart": build_split_delta_series(split_comparison),
+        "cumulatieve_delta_chart": build_cumulative_delta_series(split_comparison),
+        "lap_overlay_chart": build_lap_overlay_series(base_laps, compare_laps),
+        "pacing": {
+            "basis_labels": pacing_basis,
+            "vergelijking_labels": pacing_vergelijking,
+            "basis_opening_ms": round(base_laps[0] * 1000) if base_laps else None,
+            "vergelijking_opening_ms": round(compare_laps[0] * 1000) if compare_laps else None,
+            "basis_slot_ms": round(base_laps[-1] * 1000) if base_laps else None,
+            "vergelijking_slot_ms": round(compare_laps[-1] * 1000) if compare_laps else None,
+            "basis_verval_ms": round(base_metrics["fade_400eq"] * 1000) if base_metrics["fade_400eq"] is not None else None,
+            "vergelijking_verval_ms": round(compare_metrics["fade_400eq"] * 1000) if compare_metrics["fade_400eq"] is not None else None,
+        },
+        "onderdelen": onderdelen,
     }
 
 
@@ -1731,8 +2117,18 @@ def home(
     trend_period: str = "season",
     trend_date_from: str = "",
     trend_date_to: str = "",
+    osta_notice: str = "",
+    osta_count: str = "",
 ):
     current_user = require_user(request)
+    osta_detection = {
+        "configured": False,
+        "available": [],
+        "error_message": "",
+        "search_name": "",
+        "season": "",
+        "pid": "",
+    }
     with db() as conn:
         competition_count = conn.execute(
             "SELECT COUNT(*) AS count FROM competition WHERE owner_user_id = ?",
@@ -1771,6 +2167,7 @@ def home(
             """,
             (int(current_user["skater_id"]), int(current_user["id"])),
         ).fetchall()
+        osta_detection = detect_osta_updates_for_user(conn, current_user)
 
     best_times: dict[int, dict] = {}
     trend_rows: list[dict] = []
@@ -1842,6 +2239,9 @@ def home(
     return render(
         request,
         "index.html",
+        osta_notice=(osta_notice or "").strip(),
+        osta_notice_count=int(osta_count) if (osta_count or "").isdigit() else 0,
+        osta_detection=osta_detection,
         comps=comps,
         competition_count=competition_count,
         race_count=len(all_races),
@@ -2725,7 +3125,7 @@ def race_new_post(
 
 
 @app.get("/races/{race_id}", response_class=HTMLResponse)
-def race_detail(request: Request, race_id: int, compare_race_id: str = ""):
+def race_detail(request: Request, race_id: int):
     current_user = require_user(request)
     with db() as conn:
         r = conn.execute(
@@ -2747,17 +3147,6 @@ def race_detail(request: Request, race_id: int, compare_race_id: str = ""):
             """,
             (int(current_user["skater_id"]), int(current_user["id"])),
         ).fetchall()
-        comparison_candidates = conn.execute(
-            """
-            SELECT r.id, r.distance_m, r.total_time_ms, r.laps_csv, r.dnf, c.name AS competition_name, c.competition_date
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE r.skater_id = ? AND c.owner_user_id = ? AND r.distance_m = ? AND r.id != ?
-            ORDER BY c.competition_date DESC, r.id DESC
-            """,
-            (int(current_user["skater_id"]), int(current_user["id"]), int(race_id if r is None else r["distance_m"]), race_id),
-        ).fetchall() if r else []
-
     if not r:
         return HTMLResponse("Race not found", status_code=404)
 
@@ -2770,17 +3159,6 @@ def race_detail(request: Request, race_id: int, compare_race_id: str = ""):
         race_id,
         {"is_pr": False, "previous_pr_ms": None, "delta_vs_previous_pr_ms": None, "delta_abs_ms": None},
     )
-    selected_compare_id = compare_race_id.strip()
-    compare_row = None
-    if selected_compare_id:
-        try:
-            compare_id_value = int(selected_compare_id)
-        except ValueError:
-            compare_id_value = 0
-        compare_row = next((row for row in comparison_candidates if int(row["id"]) == compare_id_value), None)
-        if compare_row is None:
-            selected_compare_id = ""
-    comparison = build_comparison_context(r, compare_row)
 
     return render(
         request,
@@ -2795,9 +3173,69 @@ def race_detail(request: Request, race_id: int, compare_race_id: str = ""):
         fmt_date=fmt_date_ymd_to_dmy,
         fmt_sec=fmt_sec,
         format_notes_html=format_notes_html,
+    )
+
+
+@app.get("/races/{race_id}/compare", response_class=HTMLResponse)
+def race_compare(request: Request, race_id: int, compare_race_id: str = ""):
+    current_user = require_user(request)
+    with db() as conn:
+        base_race = conn.execute(
+            """
+            SELECT r.*, c.name AS competition_name, c.venue, c.competition_date
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.id = ? AND r.skater_id = ? AND c.owner_user_id = ?
+            """,
+            (race_id, int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchone()
+        if not base_race:
+            return HTMLResponse("Race not found", status_code=404)
+
+        comparison_candidates = conn.execute(
+            """
+            SELECT r.id, r.distance_m, r.total_time_ms, r.laps_csv, r.dnf, r.lane, r.opponent,
+                   c.name AS competition_name, c.venue, c.competition_date
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ? AND r.distance_m = ? AND r.id != ?
+            ORDER BY c.competition_date DESC, r.id DESC
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"]), int(base_race["distance_m"]), race_id),
+        ).fetchall()
+
+    selected_compare_id = compare_race_id.strip()
+    compare_race = None
+    if selected_compare_id:
+        try:
+            compare_id_value = int(selected_compare_id)
+            compare_race = next((row for row in comparison_candidates if int(row["id"]) == compare_id_value), None)
+        except ValueError:
+            compare_race = None
+
+    if compare_race is None and comparison_candidates:
+        compare_race = comparison_candidates[0]
+        selected_compare_id = str(compare_race["id"])
+    elif compare_race is None:
+        selected_compare_id = ""
+
+    comparison = build_comparison_context(base_race, compare_race)
+    swap_href = None
+    if compare_race is not None:
+        swap_href = f"/races/{int(compare_race['id'])}/compare?compare_race_id={int(base_race['id'])}"
+
+    return render(
+        request,
+        "race_compare.html",
+        base_race=base_race,
+        compare_race=compare_race,
         comparison_candidates=comparison_candidates,
         selected_compare_id=selected_compare_id,
         comparison=comparison,
+        swap_href=swap_href,
+        fmt_ms=fmt_ms,
+        fmt_date=fmt_date_ymd_to_dmy,
+        format_delta=format_delta,
     )
 
 
@@ -2970,7 +3408,7 @@ def race_edit_post(
 
 
 # -----------------------
-# PDF import
+# Import
 # -----------------------
 
 def parse_time_to_ms(t: str) -> int:
@@ -2982,6 +3420,282 @@ def parse_time_to_ms(t: str) -> int:
     else:
         total = float(t)
     return int(round(total * 1000))
+
+
+PDF_LANE_MAP = {
+    "gl": "Binnen",
+    "wt": "Binnen",
+    "bl": "Buiten",
+    "rd": "Buiten",
+}
+
+
+PDF_STATUS_VALUES = {"DNF", "DNS", "DSQ", "DQ", "WDR", "NC"}
+
+
+def normalize_pdf_venue(raw_value: str) -> Optional[str]:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    if " - " in value:
+        value = value.split(" - ", 1)[1].strip()
+    if re.search(r"\([A-Z]{3}\)\s*$", value):
+        return value
+    return f"{value} (NED)"
+
+
+def parse_pdf_skater_line(line: str) -> Optional[dict]:
+    match = re.match(
+        r"^(gl|bl|wt|rd)\s+\d+\s+(.+?)\s+([A-Z][A-Z0-9]{1,5})\s+([0-9:.]+)\s+([0-9:.]+|DNF|DNS|DSQ|DQ|WDR|NC)\b",
+        (line or "").strip(),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return {
+        "lane_code": match.group(1).lower(),
+        "name": match.group(2).strip(),
+        "cat": match.group(3).strip(),
+        "pr": match.group(4).strip(),
+        "time": match.group(5).strip(),
+    }
+
+
+def parse_pdf_timing_line(line: str) -> Optional[dict]:
+    dual_match = re.match(
+        r"^(\d+)m\s+([0-9:.]+)\s+\(([0-9:.]+)\)\s+(\d+)m\s+([0-9:.]+)\s+\(([0-9:.]+)\)$",
+        (line or "").strip(),
+    )
+    if dual_match:
+        return {
+            "distance_m": int(dual_match.group(1)),
+            "totals": [dual_match.group(2).strip(), dual_match.group(5).strip()],
+            "laps": [dual_match.group(3).strip(), dual_match.group(6).strip()],
+        }
+
+    single_match = re.match(
+        r"^(\d+)m\s+([0-9:.]+)\s+\(([0-9:.]+)\)$",
+        (line or "").strip(),
+    )
+    if single_match:
+        return {
+            "distance_m": int(single_match.group(1)),
+            "single_total": single_match.group(2).strip(),
+            "single_lap": single_match.group(3).strip(),
+        }
+
+    return None
+
+
+def active_pdf_timing_index(skaters: list[dict]) -> Optional[int]:
+    candidates: list[int] = []
+    for idx, skater in enumerate(skaters):
+        raw_time = (skater.get("time") or "").strip().upper()
+        if raw_time and raw_time not in PDF_STATUS_VALUES:
+            candidates.append(idx)
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def extract_pdf_pair_blocks(page_text: str) -> list[dict]:
+    lines = [(line or "").strip() for line in (page_text or "").splitlines()]
+    blocks: list[dict] = []
+    idx = 0
+    while idx < len(lines):
+        if lines[idx] != "Naam Cat PR Tijd Info":
+            idx += 1
+            continue
+
+        if idx + 6 >= len(lines):
+            break
+
+        first = parse_pdf_skater_line(lines[idx + 1])
+        second = parse_pdf_skater_line(lines[idx + 3])
+        pair_line = lines[idx + 2]
+        if not first or not second or not re.fullmatch(r"\d+", pair_line):
+            idx += 1
+            continue
+
+        skaters = [first, second]
+        active_index = active_pdf_timing_index(skaters)
+        timing_rows: list[dict] = []
+        cursor = idx + 5
+        while cursor < len(lines):
+            parsed_timing = parse_pdf_timing_line(lines[cursor])
+            if not parsed_timing:
+                break
+            if "single_total" in parsed_timing:
+                if active_index is None:
+                    cursor += 1
+                    continue
+                totals: list[Optional[str]] = [None, None]
+                laps: list[Optional[str]] = [None, None]
+                totals[active_index] = parsed_timing["single_total"]
+                laps[active_index] = parsed_timing["single_lap"]
+                parsed_timing = {
+                    "distance_m": int(parsed_timing["distance_m"]),
+                    "totals": totals,
+                    "laps": laps,
+                }
+            timing_rows.append(parsed_timing)
+            cursor += 1
+
+        if timing_rows:
+            blocks.append(
+                {
+                    "pair_no": int(pair_line),
+                    "skaters": skaters,
+                    "timings": timing_rows,
+                }
+            )
+            idx = cursor
+            continue
+
+        idx += 1
+
+    return blocks
+
+
+def extract_pdf_page_date(page_text: str, fallback_date: Optional[str] = None) -> Optional[str]:
+    text = page_text or ""
+    match = re.search(r"\bVan\s+(\d{1,2}-\d{1,2}-\d{4})\b", text, flags=re.IGNORECASE)
+    if match:
+        try:
+            return parse_date_any(match.group(1))
+        except ValueError:
+            pass
+
+    for candidate in re.findall(r"\b\d{1,2}-\d{1,2}-\d{4}\b", text):
+        try:
+            return parse_date_any(candidate)
+        except ValueError:
+            continue
+
+    return fallback_date
+
+
+def extract_pdf_results_for_skater(pdf_bytes: bytes, skater_name: str, source_filename: str = "") -> dict:
+    target_name = (skater_name or "").strip()
+    if not target_name:
+        raise ValueError("Geen schaatsersnaam ingesteld om in de PDF te zoeken.")
+    if not pdf_bytes:
+        raise ValueError("Lege PDF upload.")
+
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            texts = [(page.extract_text() or "").strip() for page in pdf.pages]
+    except Exception as exc:  # pragma: no cover - depends on parser internals
+        raise ValueError("Kon de PDF niet lezen.") from exc
+
+    non_empty_pages = [text for text in texts if text]
+    if not non_empty_pages:
+        raise ValueError("PDF bevat geen leesbare tekst.")
+
+    header_lines = [line.strip() for line in non_empty_pages[0].splitlines() if line.strip()]
+    if len(header_lines) < 3:
+        raise ValueError("Kon wedstrijdgegevens niet uit de PDF-header halen.")
+
+    competition_name_raw = header_lines[0]
+    competition_name = clean_competition_name(competition_name_raw) or competition_name_raw
+    header_date = extract_date_from_text(header_lines[2])
+    competition_venue = normalize_pdf_venue(header_lines[1])
+
+    target_norm = norm_name(target_name)
+    competitions_by_date: dict[str, dict] = {}
+    last_page_date = header_date
+
+    for text in non_empty_pages:
+        page_date = extract_pdf_page_date(text, last_page_date)
+        if page_date:
+            last_page_date = page_date
+
+        for block in extract_pdf_pair_blocks(text):
+            skaters = block["skaters"]
+            timings = block["timings"]
+            match_index = -1
+            for idx, skater in enumerate(skaters):
+                if norm_name(skater["name"]) == target_norm:
+                    match_index = idx
+                    break
+            if match_index < 0:
+                continue
+
+            own_skater = skaters[match_index]
+            opponent = skaters[1 - match_index]
+            final_timing = timings[-1]
+            total_raw = final_timing["totals"][match_index] or own_skater["time"]
+            total_upper = total_raw.upper()
+            if total_upper in PDF_STATUS_VALUES:
+                total_time_ms = None
+                dnf = 1
+            else:
+                try:
+                    total_time_ms = parse_time_to_ms(total_raw)
+                except ValueError:
+                    continue
+                dnf = 0
+
+            lap_values: list[str] = []
+            for timing in timings:
+                lap_raw = timing["laps"][match_index]
+                if not lap_raw:
+                    continue
+                try:
+                    lap_ms = parse_time_to_ms(lap_raw)
+                except ValueError:
+                    continue
+                lap_values.append(f"{lap_ms / 1000.0:.2f}")
+
+            lane_value = PDF_LANE_MAP.get(own_skater["lane_code"], own_skater["lane_code"].upper())
+            opponent_name = opponent["name"]
+            if (opponent.get("time") or "").strip().upper() in PDF_STATUS_VALUES:
+                opponent_name = ""
+            source_hint = (source_filename or "").strip()
+            source_text = source_hint if source_hint else "PDF uitslag"
+            race_date = page_date or header_date
+            if not race_date:
+                continue
+
+            competition_item = competitions_by_date.setdefault(
+                race_date,
+                {
+                    "competition": {
+                        "name": competition_name,
+                        "date": race_date,
+                        "venue": competition_venue,
+                        "notes": f"Geimporteerd van PDF: {(source_filename or '').strip() or 'uitslag PDF'}",
+                    },
+                    "results": [],
+                },
+            )
+
+            competition_item["results"].append(
+                {
+                    "pair_no": block["pair_no"],
+                    "distance_m": int(final_timing["distance_m"]),
+                    "lane": lane_value,
+                    "opponent": opponent_name,
+                    "total_time_ms": total_time_ms,
+                    "laps_csv": ",".join(lap_values) if lap_values else None,
+                    "dnf": dnf,
+                    "notes": f"Geimporteerd van PDF: {source_text}",
+                }
+            )
+
+    competitions = [competitions_by_date[key] for key in sorted(competitions_by_date)]
+    competitions = [item for item in competitions if item["results"]]
+    if not competitions:
+        raise ValueError(f"Geen ritten gevonden voor '{target_name}' in deze PDF.")
+
+    for item in competitions:
+        item["results"].sort(key=lambda row: (int(row["pair_no"]), int(row["distance_m"])))
+
+    response = {"competitions": competitions}
+    if len(competitions) == 1:
+        response["competition"] = competitions[0]["competition"]
+        response["results"] = competitions[0]["results"]
+    return response
 
 
 def append_note(existing_note: Optional[str], extra_note: str) -> str:
@@ -3064,6 +3778,220 @@ def format_notes_html(notes: Optional[str]) -> Markup:
     return Markup("<br>".join(parts))
 
 
+IMPORT_PREVIEW_NEW = "new"
+IMPORT_PREVIEW_BLACKLIST = "blacklist"
+IMPORT_PREVIEW_OVERLAP = "overlap"
+IMPORT_PREVIEW_STATUS_ORDER = (IMPORT_PREVIEW_NEW, IMPORT_PREVIEW_BLACKLIST, IMPORT_PREVIEW_OVERLAP)
+
+
+def import_source_label(source: str) -> str:
+    source_value = (source or "").strip().lower()
+    if source_value == "osta":
+        return "OSTA"
+    if source_value == "ssr":
+        return "SpeedSkatingResults"
+    if source_value == "pdf":
+        return "PDF"
+    return source_value or "Import"
+
+
+def import_competition_signature(source: str, competition: dict, source_meta: Optional[dict] = None) -> str:
+    source_value = (source or "").strip().lower()
+    comp_date = (competition.get("date") or "").strip()
+    comp_name = (competition.get("name") or "").strip()
+    source_meta = source_meta or {}
+
+    if source_value == "osta":
+        pid_value = str(source_meta.get("pid") or competition.get("source_pid") or "").strip()
+        return osta_competition_signature(comp_date, comp_name, pid_value)
+    if source_value == "ssr":
+        skater_id = str(source_meta.get("ssr_skater_id") or "").strip()
+        return f"ssr|{comp_date}|{norm_name(comp_name)}|{skater_id}"
+    if source_value == "pdf":
+        venue = (competition.get("venue") or "").strip()
+        return f"pdf|{comp_date}|{norm_name(comp_name)}|{norm_name(venue)}"
+    return f"{source_value}|{comp_date}|{norm_name(comp_name)}"
+
+
+def fetch_existing_competition_dates(conn: sqlite3.Connection, user_id: int) -> set[str]:
+    return {
+        row["competition_date"]
+        for row in conn.execute(
+            """
+            SELECT competition_date
+            FROM competition
+            WHERE owner_user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+    }
+
+
+def fetch_blacklisted_signatures(conn: sqlite3.Connection, user_id: int) -> set[str]:
+    return {
+        row["comp_signature"]
+        for row in conn.execute(
+            """
+            SELECT comp_signature
+            FROM osta_import_blacklist
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+    }
+
+
+def list_blacklist_items(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT comp_signature, comp_name, comp_date, pid, race_count, created_at
+        FROM osta_import_blacklist
+        WHERE user_id = ?
+        ORDER BY comp_date DESC, created_at DESC, comp_name COLLATE NOCASE ASC
+        """,
+        (user_id,),
+    ).fetchall()
+
+
+def build_import_preview_items(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    source: str,
+    parsed: dict,
+    source_meta: Optional[dict] = None,
+) -> list[dict]:
+    user_id = int(current_user["id"])
+    existing_dates = fetch_existing_competition_dates(conn, user_id)
+    blacklisted = fetch_blacklisted_signatures(conn, user_id)
+    source_value = (source or "").strip().lower()
+    source_meta = source_meta or {}
+
+    competitions = parsed.get("competitions")
+    if not competitions and parsed.get("competition"):
+        competitions = [{"competition": parsed["competition"], "results": parsed.get("results") or []}]
+    competitions = competitions or []
+
+    items: list[dict] = []
+    for idx, item in enumerate(competitions):
+        competition = item.get("competition") or {}
+        results = item.get("results") or []
+        signature = import_competition_signature(source_value, competition, source_meta)
+        status = IMPORT_PREVIEW_NEW
+        if signature in blacklisted:
+            status = IMPORT_PREVIEW_BLACKLIST
+        elif (competition.get("date") or "").strip() in existing_dates:
+            status = IMPORT_PREVIEW_OVERLAP
+
+        items.append(
+            {
+                "id": str(idx),
+                "status": status,
+                "selected_default": 1 if status == IMPORT_PREVIEW_NEW else 0,
+                "signature": signature,
+                "competition": competition,
+                "results": results,
+                "race_count": len(results),
+            }
+        )
+
+    return items
+
+
+def create_import_preview_batch(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    source: str,
+    source_meta: dict,
+    items: list[dict],
+) -> str:
+    batch_id = uuid.uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO import_preview_batch(id, user_id, source, payload_json, created_at)
+        VALUES(?,?,?,?,?)
+        """,
+        (
+            batch_id,
+            int(current_user["id"]),
+            (source or "").strip().lower(),
+            json.dumps({"meta": source_meta, "items": items}, ensure_ascii=False),
+            now_iso(),
+        ),
+    )
+    return batch_id
+
+
+def load_import_preview_batch(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    batch_id: str,
+) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT id, source, payload_json
+        FROM import_preview_batch
+        WHERE id = ? AND user_id = ?
+        """,
+        (batch_id, int(current_user["id"])),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload_json"])
+    except json.JSONDecodeError:
+        return None
+    return {
+        "id": row["id"],
+        "source": row["source"],
+        "meta": payload.get("meta") or {},
+        "items": payload.get("items") or [],
+    }
+
+
+def delete_import_preview_batch(conn: sqlite3.Connection, batch_id: str, user_id: int) -> None:
+    conn.execute(
+        """
+        DELETE FROM import_preview_batch
+        WHERE id = ? AND user_id = ?
+        """,
+        (batch_id, user_id),
+    )
+
+
+def preview_cards(items: list[dict]) -> dict[str, list[dict]]:
+    cards = {key: [] for key in IMPORT_PREVIEW_STATUS_ORDER}
+    for item in items:
+        status = item.get("status") or IMPORT_PREVIEW_OVERLAP
+        if status not in cards:
+            status = IMPORT_PREVIEW_OVERLAP
+        cards[status].append(item)
+    return cards
+
+
+def render_import_preview_page(
+    request: Request,
+    current_user: sqlite3.Row,
+    batch: dict,
+    error_message: str = "",
+) -> HTMLResponse:
+    items = batch.get("items") or []
+    cards = preview_cards(items)
+    return render(
+        request,
+        "import_preview.html",
+        source_label=import_source_label(batch.get("source", "")),
+        fmt_date=fmt_date_ymd_to_dmy,
+        fmt_ms=fmt_ms,
+        batch_id=batch["id"],
+        items=items,
+        card_new=cards[IMPORT_PREVIEW_NEW],
+        card_blacklist=cards[IMPORT_PREVIEW_BLACKLIST],
+        card_overlap=cards[IMPORT_PREVIEW_OVERLAP],
+        preview_error_message=error_message,
+        upload_owner_name=current_user["skater_name"],
+    )
+
+
 def default_osta_search_name(skater_name: str) -> str:
     return (skater_name or "").strip()
 
@@ -3087,6 +4015,149 @@ def normalize_osta_season(raw_value: str) -> str:
     raise ValueError("OSTA seizoen moet een startjaar zijn, bijvoorbeeld 2025, of ALL.")
 
 
+def get_osta_monitor_config(conn: sqlite3.Connection, user_id: int) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT user_id, search_name, pid, season, updated_at
+        FROM osta_monitor_config
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+
+
+def upsert_osta_monitor_config(
+    conn: sqlite3.Connection,
+    user_id: int,
+    search_name: str,
+    season: str,
+    pid: str = "",
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO osta_monitor_config(user_id, search_name, pid, season, updated_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          search_name = excluded.search_name,
+          pid = excluded.pid,
+          season = excluded.season,
+          updated_at = excluded.updated_at
+        """,
+        (
+            user_id,
+            default_osta_search_name(search_name),
+            (pid or "").strip(),
+            normalize_osta_season(season),
+            now_iso(),
+        ),
+    )
+
+
+def osta_competition_signature(comp_date: str, comp_name: str, pid: str) -> str:
+    normalized_name = norm_name(comp_name)
+    normalized_pid = (pid or "").strip().lower()
+    return f"{comp_date}|{normalized_name}|{normalized_pid}"
+
+
+def list_new_osta_competitions(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    parsed: dict,
+) -> list[dict]:
+    existing_dates = {
+        row["competition_date"]
+        for row in conn.execute(
+            """
+            SELECT competition_date
+            FROM competition
+            WHERE owner_user_id = ?
+            """,
+            (int(current_user["id"]),),
+        ).fetchall()
+    }
+    blacklisted = {
+        row["comp_signature"]
+        for row in conn.execute(
+            """
+            SELECT comp_signature
+            FROM osta_import_blacklist
+            WHERE user_id = ?
+            """,
+            (int(current_user["id"]),),
+        ).fetchall()
+    }
+
+    candidates: list[dict] = []
+    for item in parsed["competitions"]:
+        comp = item["competition"]
+        signature = osta_competition_signature(comp["date"], comp["name"], parsed["pid"])
+        if comp["date"] in existing_dates or signature in blacklisted:
+            continue
+        candidates.append(
+            {
+                "name": comp["name"],
+                "date": comp["date"],
+                "race_count": len(item["results"]),
+                "signature": signature,
+                "pid": parsed["pid"],
+            }
+        )
+    return candidates
+
+
+def detect_osta_updates_for_user(conn: sqlite3.Connection, current_user: sqlite3.Row) -> dict:
+    config = get_osta_monitor_config(conn, int(current_user["id"]))
+    if not config:
+        search_name = default_osta_search_name(current_user["skater_name"])
+        season = default_ssr_season()
+        pid = ""
+    else:
+        search_name = default_osta_search_name(config["search_name"] or current_user["skater_name"])
+        try:
+            season = normalize_osta_season(config["season"] or default_ssr_season())
+        except ValueError:
+            season = default_ssr_season()
+        pid = (config["pid"] or "").strip()
+
+    try:
+        parsed = extract_osta_results(search_name, season, pid)
+    except ValueError as exc:
+        if not config:
+            return {
+                "configured": False,
+                "available": [],
+                "error_message": "",
+                "search_name": "",
+                "season": "",
+                "pid": "",
+            }
+        return {
+            "configured": True,
+            "available": [],
+            "error_message": f"Kon OSTA-check niet uitvoeren: {str(exc)}",
+            "search_name": search_name,
+            "season": season,
+            "pid": pid,
+        }
+
+    upsert_osta_monitor_config(
+        conn,
+        int(current_user["id"]),
+        search_name=search_name,
+        season=season,
+        pid=parsed["pid"],
+    )
+
+    return {
+        "configured": True,
+        "available": list_new_osta_competitions(conn, current_user, parsed),
+        "error_message": "",
+        "search_name": search_name,
+        "season": season,
+        "pid": parsed["pid"],
+    }
+
+
 def osta_fetch_soup(path: str, params: Optional[dict[str, object]] = None) -> BeautifulSoup:
     url = urljoin(OSTA_BASE, path)
     if params:
@@ -3105,19 +4176,80 @@ def osta_fetch_soup(path: str, params: Optional[dict[str, object]] = None) -> Be
     return BeautifulSoup(payload, "html.parser")
 
 
-def osta_lookup_pid(search_name: str) -> tuple[str, str]:
+class OstaMultipleMatchesError(ValueError):
+    def __init__(self, query_name: str, candidates: list[dict]):
+        self.query_name = query_name
+        self.candidates = candidates
+        super().__init__(f"Meerdere OSTA profielen gevonden voor '{query_name}'.")
+
+
+def osta_lookup_candidates(search_name: str) -> list[dict]:
     query_name = default_osta_search_name(search_name)
     if not query_name:
         raise ValueError("Voer een naam in voor OSTA.")
 
     soup = osta_fetch_soup("index.php", {"ZoekStr": query_name})
+
+    candidates: list[dict] = []
+    seen_pids: set[str] = set()
+
+    for row in soup.select("table.naam tr"):
+        cells = row.find_all("td")
+        if len(cells) < 1:
+            continue
+        profile_link = cells[0].select_one("a[href]")
+        if not profile_link:
+            continue
+
+        href_value = profile_link.get("href", "")
+        parsed_href = urlparse(urljoin(OSTA_BASE, href_value))
+        pid_value = parse_qs(parsed_href.query).get("pid", [""])[0].strip()
+        if not pid_value or pid_value in seen_pids:
+            continue
+        seen_pids.add(pid_value)
+
+        candidates.append(
+            {
+                "pid": pid_value,
+                "name": profile_link.get_text(" ", strip=True),
+                "category": cells[1].get_text(" ", strip=True) if len(cells) > 1 else "",
+                "seasons": cells[2].get_text(" ", strip=True) if len(cells) > 2 else "",
+                "club": cells[3].get_text(" ", strip=True) if len(cells) > 3 else "",
+            }
+        )
+
+    if candidates:
+        return candidates
+
     pid_input = soup.select_one("form#tijden input[name='pid']")
     heading = soup.select_one("div#main h1")
     if not pid_input or not pid_input.get("value"):
-        raise ValueError(f"Geen OSTA resultaat gevonden voor '{query_name}'.")
+        return []
 
-    resolved_name = heading.get_text(" ", strip=True) if heading else query_name
-    return pid_input["value"].strip(), resolved_name
+    pid_value = pid_input["value"].strip()
+    if not pid_value:
+        return []
+    return [
+        {
+            "pid": pid_value,
+            "name": heading.get_text(" ", strip=True) if heading else query_name,
+            "category": "",
+            "seasons": "",
+            "club": "",
+        }
+    ]
+
+
+def osta_lookup_pid(search_name: str) -> tuple[str, str]:
+    query_name = default_osta_search_name(search_name)
+    candidates = osta_lookup_candidates(query_name)
+    if not candidates:
+        raise ValueError(f"Geen OSTA resultaat gevonden voor '{query_name}'.")
+    if len(candidates) > 1:
+        raise OstaMultipleMatchesError(query_name, candidates)
+
+    selected = candidates[0]
+    return selected["pid"], selected["name"] or query_name
 
 
 def osta_build_laps_csv(detail_soup: BeautifulSoup) -> Optional[str]:
@@ -3250,6 +4382,7 @@ def import_osta_competitions(
     current_user: sqlite3.Row,
     parsed: dict,
     update_existing: bool,
+    force_new_competition: bool = False,
 ) -> dict:
     imported_competitions = 0
     imported_races = 0
@@ -3270,11 +4403,11 @@ def import_osta_competitions(
             (int(current_user["id"]), comp_date),
         ).fetchall()
 
-        if existing_competitions and not update_existing:
+        if existing_competitions and not update_existing and not force_new_competition:
             skipped_dates.append(comp_date)
             continue
 
-        if existing_competitions:
+        if existing_competitions and not force_new_competition:
             comp_id = int(existing_competitions[0]["id"])
             conn.execute(
                 """
@@ -3297,6 +4430,7 @@ def import_osta_competitions(
                 ),
             )
         else:
+            source_pid_value = str(comp.get("source_pid") or parsed.get("pid") or "").strip()
             conn.execute(
                 """
                 INSERT INTO competition(name, venue, competition_date, notes, created_at, owner_user_id)
@@ -3306,7 +4440,10 @@ def import_osta_competitions(
                     comp["name"],
                     comp["venue"],
                     comp_date,
-                    source_note("OSTA", f"{OSTA_BASE}index.php?pid={quote(parsed['pid'])}"),
+                    source_note(
+                        "OSTA",
+                        f"{OSTA_BASE}index.php?pid={quote(source_pid_value)}" if source_pid_value else None,
+                    ),
                     now_iso(),
                     int(current_user["id"]),
                 ),
@@ -3382,6 +4519,130 @@ def import_osta_competitions(
         "imported_races": imported_races,
         "updated_races": updated_races,
         "skipped_dates": skipped_dates,
+    }
+
+
+def race_is_duplicate(existing_rows: list[sqlite3.Row], result: dict) -> bool:
+    for row in existing_rows:
+        same_total = row["total_time_ms"] == result.get("total_time_ms")
+        same_lane = (row["lane"] or "").strip().lower() == (result.get("lane") or "").strip().lower()
+        same_opponent = (row["opponent"] or "").strip().lower() == (result.get("opponent") or "").strip().lower()
+        same_laps = (row["laps_csv"] or "").strip() == (result.get("laps_csv") or "").strip()
+        same_dnf = int(row["dnf"] or 0) == int(result.get("dnf") or 0)
+        if same_total and same_lane and same_opponent and same_laps and same_dnf:
+            return True
+    return False
+
+
+def import_generic_competitions(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    competitions: list[dict],
+    force_new_competition: bool = False,
+) -> dict:
+    imported_competitions = 0
+    imported_races = 0
+    updated_races = 0
+
+    for item in competitions:
+        comp = item.get("competition") or {}
+        results = item.get("results") or []
+        comp_date = (comp.get("date") or "").strip()
+        if not comp_date:
+            continue
+
+        existing_comp = conn.execute(
+            """
+            SELECT id, name, venue, notes
+            FROM competition
+            WHERE owner_user_id = ? AND competition_date = ?
+            ORDER BY CASE WHEN LOWER(name) = LOWER(?) THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+            """,
+            (
+                int(current_user["id"]),
+                comp_date,
+                (comp.get("name") or "").strip(),
+            ),
+        ).fetchone()
+
+        if existing_comp and not force_new_competition:
+            comp_id = int(existing_comp["id"])
+            next_venue = existing_comp["venue"] or comp.get("venue")
+            next_notes = append_note(existing_comp["notes"], (comp.get("notes") or "").strip())
+            conn.execute(
+                """
+                UPDATE competition
+                SET venue = ?, notes = ?
+                WHERE id = ?
+                """,
+                (next_venue, next_notes, comp_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO competition(name, venue, competition_date, notes, created_at, owner_user_id)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    comp.get("name") or "Geimporteerde wedstrijd",
+                    comp.get("venue"),
+                    comp_date,
+                    comp.get("notes"),
+                    now_iso(),
+                    int(current_user["id"]),
+                ),
+            )
+            comp_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+            imported_competitions += 1
+
+        for result in results:
+            existing_races = conn.execute(
+                """
+                SELECT id, total_time_ms, lane, opponent, laps_csv, dnf
+                FROM race
+                WHERE competition_id = ? AND skater_id = ? AND distance_m = ?
+                """,
+                (
+                    comp_id,
+                    int(current_user["skater_id"]),
+                    int(result["distance_m"]),
+                ),
+            ).fetchall()
+            if race_is_duplicate(existing_races, result):
+                updated_races += 1
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO race(
+                  competition_id, skater_id, distance_m, category, class_name, lane, opponent,
+                  total_time_ms, laps_csv, dnf, notes, created_at
+                )
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    comp_id,
+                    int(current_user["skater_id"]),
+                    int(result["distance_m"]),
+                    result.get("category"),
+                    result.get("class_name"),
+                    (result.get("lane") or "").strip() or None,
+                    (result.get("opponent") or "").strip() or None,
+                    result.get("total_time_ms"),
+                    (result.get("laps_csv") or "").strip() or None,
+                    int(result.get("dnf", 0)),
+                    result.get("notes"),
+                    now_iso(),
+                ),
+            )
+            imported_races += 1
+
+    return {
+        "imported_competitions": imported_competitions,
+        "imported_races": imported_races,
+        "updated_races": updated_races,
+        "skipped_dates": [],
     }
 
 
@@ -3540,6 +4801,7 @@ def extract_ssr_results_for_skater(skater_id: str, season: str) -> dict:
                         "venue": (item.get("location") or "").strip() or None,
                         "date": comp_date,
                         "source_link": (item.get("link") or "").strip() or None,
+                        "notes": source_note("SpeedSkatingResults", item.get("link") or ""),
                     },
                     "results": [],
                 },
@@ -3573,360 +4835,141 @@ def extract_ssr_results_for_skater(skater_id: str, season: str) -> dict:
     return {"competitions": competitions}
 
 
-PDF_TIME_RE = re.compile(r"(\d+:\d{2}\.\d{2}|\d{1,2}\.\d{2})")
-PDF_DISTANCE_RE = re.compile(r"(\d+)\s*meter", re.IGNORECASE)
-PDF_LANE_RE = re.compile(r"^(wt|rd|gl|bl)\s+\d+\b", re.IGNORECASE)
-PDF_SPLIT_LINE_RE = re.compile(
-    r"^(\d+)m\s+(\d+:\d{2}\.\d{2}|\d{1,2}\.\d{2})\s+\((\d+:\d{2}\.\d{2}|\d{1,2}\.\d{2})\)$",
-    re.IGNORECASE,
-)
-
-
-def parse_pdf_info_value(line: str) -> Optional[dict]:
-    line = (line or "").strip()
-    if not line:
-        return None
-
-    upper = line.upper()
-    if upper in {"DNS", "DNF", "DSQ", "DQ", "WDR"}:
-        return {"status": upper, "time": None}
-
-    match = PDF_TIME_RE.search(line)
-    if match:
-        return {"status": None, "time": match.group(1)}
-
-    return None
-
-
-def parse_owner_result_from_heat(block_lines: list[str], owner_name: str, distance_m: int) -> Optional[dict]:
-    owner_norm = norm_name(owner_name)
-    header_idx = None
-    info_idx = None
-
-    for idx, line in enumerate(block_lines):
-        line_norm = norm_name(line)
-        if header_idx is None and "naam" in line_norm and "tijd" in line_norm:
-            header_idx = idx
-        if "info" == line_norm:
-            info_idx = idx
-            break
-
-    block_text_norm = norm_name(" ".join(block_lines))
-    if header_idx is None or owner_norm not in block_text_norm:
-        return None
-
-    entrant_lines: list[str] = []
-    current_entrant = ""
-    for line in block_lines[:header_idx]:
-        if PDF_LANE_RE.match(line):
-            if current_entrant:
-                entrant_lines.append(current_entrant)
-            current_entrant = line
-            continue
-
-        if current_entrant and "naam" not in norm_name(line) and "tijd" not in norm_name(line):
-            current_entrant = f"{current_entrant} {line}".strip()
-
-    if current_entrant:
-        entrant_lines.append(current_entrant)
-
-    owner_position = None
-    for idx, line in enumerate(entrant_lines):
-        if owner_norm in norm_name(line):
-            owner_position = idx
-            break
-
-    info_values: list[dict] = []
-    if info_idx is not None:
-        for line in block_lines[info_idx + 1 :]:
-            parsed_info = parse_pdf_info_value(line)
-            if parsed_info:
-                info_values.append(parsed_info)
-            elif info_values:
-                break
-
-    owner_info = None
-    if owner_position is not None and owner_position < len(info_values):
-        owner_info = info_values[owner_position]
-    elif len(info_values) == 1:
-        owner_info = info_values[0]
-    elif owner_position is None:
-        timed_info_values = [item for item in info_values if item["time"]]
-        if len(timed_info_values) == 1:
-            owner_info = timed_info_values[0]
-
-    owner_total_time = owner_info["time"] if owner_info else None
-    owner_dnf = 1 if owner_info and owner_info["status"] in {"DNS", "DNF", "DSQ", "DQ", "WDR"} else 0
-
-    if not owner_total_time:
-        return None
-
-    return {
-        "distance_m": distance_m,
-        "total_time_ms": parse_time_to_ms(owner_total_time),
-        "laps_csv": None,
-        "dnf": owner_dnf,
-        "raw": " | ".join(block_lines),
-    }
-
-
-def extract_pdf_results_for_owner(
-    pdf_bytes: bytes,
-    owner_name: str,
-    fallback_name: Optional[str] = None,
-    fallback_date: Optional[str] = None,
-    fallback_venue: Optional[str] = None,
-    source_filename: Optional[str] = None,
-) -> dict:
-    # Requires pdfplumber in requirements.txt
-    import pdfplumber
-
-    owner_norm = norm_name(owner_name)
-    results = []
-    competition = {"name": None, "venue": None, "date": None}
-    current_distance = None
-    seen_results = set()
-
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-
-            # Try parse header info (first relevant page)
-            if not competition["name"] and len(lines) >= 1:
-                competition["name"] = clean_competition_name(lines[0]) or lines[0]
-
-                # Find a date in first lines
-                for h in lines[:10]:
-                    parsed_date = extract_date_from_text(h)
-                    if parsed_date:
-                        competition["date"] = parsed_date
-                        break
-
-                # Venue heuristic
-                for h in lines[1:10]:
-                    if "-" in h and len(h) < 80 and "uitslag" not in h.lower():
-                        competition["venue"] = h
-                        break
-
-            current_block: list[str] = []
-
-            def flush_current_block() -> None:
-                nonlocal current_block
-                if not current_block or current_distance is None:
-                    current_block = []
-                    return
-
-                parsed_result = parse_owner_result_from_heat(current_block, owner_name, current_distance)
-                current_block = []
-                if not parsed_result:
-                    return
-
-                result_key = (
-                    parsed_result["distance_m"],
-                    parsed_result["total_time_ms"],
-                    parsed_result["laps_csv"],
-                )
-                if result_key in seen_results:
-                    return
-
-                seen_results.add(result_key)
-                results.append(parsed_result)
-
-            for line in lines:
-                distance_match = PDF_DISTANCE_RE.search(line)
-                if "uitslag" in line.lower() and distance_match:
-                    flush_current_block()
-                    current_distance = int(distance_match.group(1))
-                    continue
-
-                if current_distance is None:
-                    continue
-
-                if PDF_LANE_RE.match(line) and current_block and any(
-                    "naam" in norm_name(block_line) and "tijd" in norm_name(block_line)
-                    for block_line in current_block
-                ):
-                    flush_current_block()
-
-                current_block.append(line)
-
-            flush_current_block()
-
-    if not competition["date"] and source_filename:
-        competition["date"] = extract_date_from_text(source_filename)
-
-    if fallback_name:
-        competition["name"] = fallback_name.strip()
-    elif competition["name"]:
-        competition["name"] = clean_competition_name(competition["name"])
-
-    if fallback_date:
-        competition["date"] = parse_date_any(fallback_date)
-
-    if fallback_venue:
-        competition["venue"] = fallback_venue.strip()
-
-    if not competition["name"] or not competition["date"]:
-        raise ValueError("Kon wedstrijdnaam/datum niet betrouwbaar uit PDF halen.")
-    if not results:
-        raise ValueError(f"Geen ritten gevonden voor '{owner_name}'.")
-
-    return {"competition": competition, "results": results}
-
-
 def render_import_page(
     request: Request,
     current_user: sqlite3.Row,
     **ctx,
 ) -> HTMLResponse:
+    monitor_search_name = default_osta_search_name(current_user["skater_name"])
+    monitor_pid = ""
+    monitor_season = default_ssr_season()
+    with db() as conn:
+        monitor_config = get_osta_monitor_config(conn, int(current_user["id"]))
+        blacklist_items = list_blacklist_items(conn, int(current_user["id"]))
+        if monitor_config:
+            monitor_search_name = default_osta_search_name(monitor_config["search_name"] or monitor_search_name)
+            monitor_pid = (monitor_config["pid"] or "").strip()
+            try:
+                monitor_season = normalize_osta_season(monitor_config["season"] or monitor_season)
+            except ValueError:
+                monitor_season = default_ssr_season()
+
     default_given_name, default_family_name = split_name_parts(current_user["skater_name"])
     defaults = {
         "upload_owner_name": current_user["skater_name"],
-        "upload_competition_name": "",
-        "upload_competition_date": "",
-        "upload_competition_venue": "",
         "ssr_skater_id": "",
         "ssr_given_name": default_given_name,
         "ssr_family_name": default_family_name,
         "ssr_season": default_ssr_season(),
-        "osta_search_name": default_osta_search_name(current_user["skater_name"]),
-        "osta_pid": "",
-        "osta_season": default_ssr_season(),
-        "osta_update_existing": False,
+        "osta_search_name": monitor_search_name,
+        "osta_pid": monitor_pid,
+        "osta_season": monitor_season,
         "osta_error_message": "",
         "osta_success_message": "",
-        "error_message": "",
         "ssr_error_message": "",
         "ssr_success_message": "",
+        "pdf_error_message": "",
+        "pdf_success_message": "",
+        "blacklist_items": blacklist_items,
+        "blacklist_error_message": "",
+        "blacklist_success_message": "",
+        "fmt_date": fmt_date_ymd_to_dmy,
     }
     defaults.update(ctx)
-    return render(request, "import_pdf.html", **defaults)
+    return render(request, "import.html", **defaults)
 
 
-@app.get("/import/pdf", response_class=HTMLResponse)
-def import_pdf_page(request: Request):
+def render_osta_profile_select_page(
+    request: Request,
+    current_user: sqlite3.Row,
+    search_name: str,
+    season: str,
+    candidates: list[dict],
+    error_message: str = "",
+) -> HTMLResponse:
+    return render(
+        request,
+        "import_osta_profiles.html",
+        upload_owner_name=current_user["skater_name"],
+        osta_search_name=search_name,
+        osta_season=season,
+        osta_candidates=candidates,
+        osta_profile_error_message=error_message,
+    )
+
+
+@app.get("/import", response_class=HTMLResponse)
+def import_page(request: Request):
     current_user = require_user(request)
     return render_import_page(request, current_user)
 
 
+@app.get("/import/pdf")
+def import_pdf_redirect() -> RedirectResponse:
+    return RedirectResponse("/import", status_code=308)
+
+
 @app.post("/import/pdf")
-async def import_pdf_post(
+def import_pdf_post(
     request: Request,
-    competition_name: str = Form(""),
-    competition_date: str = Form(""),
-    competition_venue: str = Form(""),
-    file: UploadFile = File(...),
+    pdf_file: UploadFile = File(...),
 ):
     current_user = require_user(request)
-    upload_owner_name = current_user["skater_name"]
-    pdf_bytes = await file.read()
-    try:
-        parsed = extract_pdf_results_for_owner(
-            pdf_bytes,
-            upload_owner_name,
-            fallback_name=competition_name.strip() or None,
-            fallback_date=competition_date.strip() or None,
-            fallback_venue=competition_venue.strip() or None,
-            source_filename=file.filename,
+    filename = (pdf_file.filename or "").strip()
+    if not filename.lower().endswith(".pdf"):
+        return render_import_page(
+            request,
+            current_user,
+            pdf_error_message="Upload een PDF-bestand.",
         )
+
+    payload = pdf_file.file.read()
+    if not payload:
+        return render_import_page(
+            request,
+            current_user,
+            pdf_error_message="Leeg bestand geupload.",
+        )
+
+    try:
+        parsed = extract_pdf_results_for_skater(payload, current_user["skater_name"], filename)
     except ValueError as exc:
         return render_import_page(
             request,
             current_user,
-            upload_owner_name=upload_owner_name,
-            upload_competition_name=competition_name,
-            upload_competition_date=competition_date,
-            upload_competition_venue=competition_venue,
-            error_message=str(exc),
+            pdf_error_message=str(exc),
         )
 
-    comp = parsed["competition"]
-    items = parsed["results"]
-
     with db() as conn:
-        existing = conn.execute(
-            """
-            SELECT id
-            FROM competition
-            WHERE owner_user_id = ? AND name = ? AND competition_date = ?
-            """,
-            (int(current_user["id"]), comp["name"], comp["date"]),
-        ).fetchone()
-
-        if existing:
-            comp_id = existing["id"]
-        else:
-            conn.execute(
-                """
-                INSERT INTO competition(name, venue, competition_date, notes, created_at, owner_user_id)
-                VALUES(?,?,?,?,?,?)
-                """,
-                (
-                    comp["name"],
-                    comp["venue"],
-                    comp["date"],
-                    f"Imported from PDF: {file.filename}",
-                    now_iso(),
-                    int(current_user["id"]),
-                ),
+        items = build_import_preview_items(
+            conn,
+            current_user,
+            "pdf",
+            parsed,
+            source_meta={"filename": filename},
+        )
+        if not items:
+            return render_import_page(
+                request,
+                current_user,
+                pdf_error_message="Geen importeerbare gegevens gevonden in deze PDF.",
             )
-            comp_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+        batch_id = create_import_preview_batch(
+            conn,
+            current_user,
+            "pdf",
+            source_meta={"filename": filename},
+            items=items,
+        )
+        batch = load_import_preview_batch(conn, current_user, batch_id)
 
-        imported_count = 0
-
-        for r in items:
-            if int(r["distance_m"]) <= 0:
-                continue
-
-            dupe = conn.execute(
-                """
-                SELECT 1 FROM race
-                WHERE competition_id = ? AND skater_id = ? AND distance_m = ? AND total_time_ms = ?
-                LIMIT 1
-                """,
-                (comp_id, int(current_user["skater_id"]), int(r["distance_m"]), int(r["total_time_ms"])),
-            ).fetchone()
-            if dupe:
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO race(
-                  competition_id, skater_id, distance_m, category, class_name, lane, opponent,
-                  total_time_ms, laps_csv, dnf, notes, created_at
-                )
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    comp_id,
-                    int(current_user["skater_id"]),
-                    int(r["distance_m"]),
-                    None,
-                    None,
-                    None,
-                    None,
-                    int(r["total_time_ms"]) if r["total_time_ms"] is not None else None,
-                    r["laps_csv"],
-                    int(r.get("dnf", 0)),
-                    f"Imported from PDF line: {r['raw']}",
-                    now_iso(),
-                ),
-            )
-            imported_count += 1
-
-    if imported_count == 0:
+    if not batch:
         return render_import_page(
             request,
             current_user,
-            upload_owner_name=upload_owner_name,
-            upload_competition_name=competition_name,
-            upload_competition_date=competition_date,
-            upload_competition_venue=competition_venue,
-            error_message="Alle gevonden ritten stonden al in de database.",
+            pdf_error_message="Kon de import-preview niet voorbereiden.",
         )
-
-    return RedirectResponse(f"/competitions/{comp_id}", status_code=303)
+    return render_import_preview_page(request, current_user, batch)
 
 
 @app.post("/import/speedskatingresults")
@@ -3969,76 +5012,39 @@ def import_speedskatingresults_post(
             ssr_error_message=str(exc),
         )
 
-    imported_competitions = 0
-    imported_races = 0
-    skipped_dates: list[str] = []
-
     with db() as conn:
-        existing_dates = {
-            row["competition_date"]
-            for row in conn.execute(
-                """
-                SELECT competition_date
-                FROM competition
-                WHERE owner_user_id = ?
-                """,
-                (int(current_user["id"]),),
-            ).fetchall()
-        }
-
-        for item in parsed["competitions"]:
-            comp = item["competition"]
-            results = item["results"]
-            comp_date = comp["date"]
-            if comp_date in existing_dates:
-                skipped_dates.append(comp_date)
-                continue
-
-            conn.execute(
-                """
-                INSERT INTO competition(name, venue, competition_date, notes, created_at, owner_user_id)
-                VALUES(?,?,?,?,?,?)
-                """,
-                (
-                    comp["name"],
-                    comp["venue"],
-                    comp_date,
-                    source_note("SpeedSkatingResults", comp.get("source_link")),
-                    now_iso(),
-                    int(current_user["id"]),
-                ),
+        items = build_import_preview_items(
+            conn,
+            current_user,
+            "ssr",
+            parsed,
+            source_meta={"ssr_skater_id": skater_id_value},
+        )
+        if not items:
+            return render_import_page(
+                request,
+                current_user,
+                ssr_skater_id=skater_id_value,
+                ssr_given_name=ssr_given_name,
+                ssr_family_name=ssr_family_name,
+                ssr_season=season_value,
+                ssr_error_message="Geen importeerbare SSR-data gevonden.",
             )
-            comp_id = int(conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
-            existing_dates.add(comp_date)
-            imported_competitions += 1
+        batch_id = create_import_preview_batch(
+            conn,
+            current_user,
+            "ssr",
+            source_meta={
+                "ssr_skater_id": skater_id_value,
+                "ssr_given_name": ssr_given_name,
+                "ssr_family_name": ssr_family_name,
+                "ssr_season": season_value,
+            },
+            items=items,
+        )
+        batch = load_import_preview_batch(conn, current_user, batch_id)
 
-            for result in results:
-                conn.execute(
-                    """
-                    INSERT INTO race(
-                      competition_id, skater_id, distance_m, category, class_name, lane, opponent,
-                      total_time_ms, laps_csv, dnf, notes, created_at
-                    )
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        comp_id,
-                        int(current_user["skater_id"]),
-                        int(result["distance_m"]),
-                        None,
-                        None,
-                        None,
-                        None,
-                        result["total_time_ms"],
-                        result["laps_csv"],
-                        int(result.get("dnf", 0)),
-                        result["notes"],
-                        now_iso(),
-                    ),
-                )
-                imported_races += 1
-
-    if imported_competitions == 0:
+    if not batch:
         return render_import_page(
             request,
             current_user,
@@ -4046,27 +5052,9 @@ def import_speedskatingresults_post(
             ssr_given_name=ssr_given_name,
             ssr_family_name=ssr_family_name,
             ssr_season=season_value,
-            ssr_error_message=(
-                "Geen nieuwe wedstrijden geimporteerd. Er bestaat al een wedstrijd op alle gevonden datums."
-            ),
+            ssr_error_message="Kon de import-preview niet voorbereiden.",
         )
-
-    skipped_summary = ""
-    if skipped_dates:
-        unique_dates = ", ".join(fmt_date_ymd_to_dmy(value) for value in sorted(set(skipped_dates)))
-        skipped_summary = f" Overgeslagen datums: {unique_dates}."
-
-    return render_import_page(
-        request,
-        current_user,
-        ssr_skater_id=skater_id_value,
-        ssr_given_name=ssr_given_name,
-        ssr_family_name=ssr_family_name,
-        ssr_season=season_value,
-        ssr_success_message=(
-            f"{imported_competitions} wedstrijden en {imported_races} ritten geimporteerd voor SSR id {skater_id_value}.{skipped_summary}"
-        ),
-    )
+    return render_import_preview_page(request, current_user, batch)
 
 
 @app.post("/import/osta")
@@ -4075,7 +5063,6 @@ def import_osta_post(
     osta_search_name: str = Form(""),
     osta_pid: str = Form(""),
     osta_season: str = Form(""),
-    osta_update_existing: Optional[str] = Form(None),
 ):
     current_user = require_user(request)
     search_name_value = osta_search_name.strip() or default_osta_search_name(current_user["skater_name"])
@@ -4083,6 +5070,20 @@ def import_osta_post(
 
     try:
         season_value = normalize_osta_season(osta_season)
+        if not pid_value:
+            candidates = osta_lookup_candidates(search_name_value)
+            if not candidates:
+                raise ValueError(f"Geen OSTA resultaat gevonden voor '{search_name_value}'.")
+            if len(candidates) > 1:
+                return render_osta_profile_select_page(
+                    request,
+                    current_user,
+                    search_name=search_name_value,
+                    season=season_value,
+                    candidates=candidates,
+                )
+            pid_value = candidates[0]["pid"]
+
         parsed = extract_osta_results(search_name_value, season_value, pid_value)
     except ValueError as exc:
         return render_import_page(
@@ -4091,53 +5092,453 @@ def import_osta_post(
             osta_search_name=search_name_value,
             osta_pid=pid_value,
             osta_season=osta_season.strip() or default_ssr_season(),
-            osta_update_existing=osta_update_existing == "on",
             osta_error_message=str(exc),
         )
 
     with db() as conn:
-        summary = import_osta_competitions(
+        items = build_import_preview_items(
             conn,
             current_user,
+            "osta",
             parsed,
-            update_existing=osta_update_existing == "on",
+            source_meta={"pid": parsed["pid"]},
         )
+        if not items:
+            return render_import_page(
+                request,
+                current_user,
+                osta_search_name=search_name_value,
+                osta_pid=parsed["pid"],
+                osta_season=season_value,
+                osta_error_message="Geen importeerbare OSTA-data gevonden.",
+            )
+        upsert_osta_monitor_config(
+            conn,
+            int(current_user["id"]),
+            search_name=search_name_value,
+            season=season_value,
+            pid=parsed["pid"],
+        )
+        batch_id = create_import_preview_batch(
+            conn,
+            current_user,
+            "osta",
+            source_meta={
+                "pid": parsed["pid"],
+                "search_name": search_name_value,
+                "season": season_value,
+            },
+            items=items,
+        )
+        batch = load_import_preview_batch(conn, current_user, batch_id)
 
-    if (
-        summary["imported_competitions"] == 0
-        and summary["imported_races"] == 0
-        and summary["updated_races"] == 0
-    ):
+    if not batch:
         return render_import_page(
             request,
             current_user,
             osta_search_name=search_name_value,
             osta_pid=parsed["pid"],
             osta_season=season_value,
-            osta_update_existing=osta_update_existing == "on",
-            osta_error_message=(
-                "Geen nieuwe OSTA-data verwerkt. Er bestaat al een wedstrijd op alle gevonden datums."
-            ),
+            osta_error_message="Kon de import-preview niet voorbereiden.",
+        )
+    return render_import_preview_page(request, current_user, batch)
+
+
+@app.post("/import/osta/select")
+def import_osta_select_post(
+    request: Request,
+    osta_search_name: str = Form(""),
+    osta_season: str = Form(""),
+    selected_pids: list[str] = Form([]),
+):
+    current_user = require_user(request)
+    search_name_value = osta_search_name.strip() or default_osta_search_name(current_user["skater_name"])
+
+    try:
+        season_value = normalize_osta_season(osta_season)
+    except ValueError as exc:
+        return render_import_page(
+            request,
+            current_user,
+            osta_search_name=search_name_value,
+            osta_season=osta_season.strip() or default_ssr_season(),
+            osta_error_message=str(exc),
         )
 
-    skipped_summary = ""
-    if summary["skipped_dates"]:
-        unique_dates = ", ".join(fmt_date_ymd_to_dmy(value) for value in sorted(set(summary["skipped_dates"])))
-        skipped_summary = f" Overgeslagen datums: {unique_dates}."
+    selected_pid_values = []
+    seen_pid_values = set()
+    for pid in selected_pids:
+        pid_value = (pid or "").strip()
+        if not pid_value or pid_value in seen_pid_values:
+            continue
+        seen_pid_values.add(pid_value)
+        selected_pid_values.append(pid_value)
 
+    if not selected_pid_values:
+        try:
+            candidates = osta_lookup_candidates(search_name_value)
+        except ValueError as exc:
+            return render_import_page(
+                request,
+                current_user,
+                osta_search_name=search_name_value,
+                osta_season=season_value,
+                osta_error_message=str(exc),
+            )
+        return render_osta_profile_select_page(
+            request,
+            current_user,
+            search_name=search_name_value,
+            season=season_value,
+            candidates=candidates,
+            error_message="Selecteer minimaal een OSTA-profiel.",
+        )
+
+    combined_competitions: list[dict] = []
+    for pid_value in selected_pid_values:
+        try:
+            parsed = extract_osta_results(search_name_value, season_value, pid_value)
+        except ValueError as exc:
+            return render_import_page(
+                request,
+                current_user,
+                osta_search_name=search_name_value,
+                osta_season=season_value,
+                osta_error_message=f"OSTA profiel {pid_value}: {str(exc)}",
+            )
+        combined_competitions.extend(parsed.get("competitions") or [])
+
+    if not combined_competitions:
+        return render_import_page(
+            request,
+            current_user,
+            osta_search_name=search_name_value,
+            osta_season=season_value,
+            osta_error_message="Geen importeerbare OSTA-data gevonden voor de gekozen profielen.",
+        )
+
+    with db() as conn:
+        items = build_import_preview_items(
+            conn,
+            current_user,
+            "osta",
+            {"competitions": combined_competitions},
+            source_meta={"pid": selected_pid_values[0]},
+        )
+        if not items:
+            return render_import_page(
+                request,
+                current_user,
+                osta_search_name=search_name_value,
+                osta_season=season_value,
+                osta_error_message="Geen importeerbare OSTA-data gevonden.",
+            )
+        upsert_osta_monitor_config(
+            conn,
+            int(current_user["id"]),
+            search_name=search_name_value,
+            season=season_value,
+            pid=selected_pid_values[0],
+        )
+        batch_id = create_import_preview_batch(
+            conn,
+            current_user,
+            "osta",
+            source_meta={
+                "pid": selected_pid_values[0],
+                "pids": selected_pid_values,
+                "search_name": search_name_value,
+                "season": season_value,
+            },
+            items=items,
+        )
+        batch = load_import_preview_batch(conn, current_user, batch_id)
+
+    if not batch:
+        return render_import_page(
+            request,
+            current_user,
+            osta_search_name=search_name_value,
+            osta_season=season_value,
+            osta_error_message="Kon de import-preview niet voorbereiden.",
+        )
+    return render_import_preview_page(request, current_user, batch)
+
+
+@app.post("/import/preview/commit")
+def import_preview_commit_post(
+    request: Request,
+    batch_id: str = Form(""),
+    action: str = Form("import"),
+    selected_races: list[str] = Form([]),
+):
+    current_user = require_user(request)
+    batch_id_value = (batch_id or "").strip()
+    if not batch_id_value:
+        return render_import_page(request, current_user, osta_error_message="Import-preview niet gevonden.")
+
+    with db() as conn:
+        batch = load_import_preview_batch(conn, current_user, batch_id_value)
+        if not batch:
+            return render_import_page(request, current_user, osta_error_message="Import-preview is verlopen.")
+
+        if action == "cancel":
+            delete_import_preview_batch(conn, batch_id_value, int(current_user["id"]))
+            return render_import_page(request, current_user, osta_success_message="Import geannuleerd.")
+
+        selected_keys = {(value or "").strip() for value in selected_races if (value or "").strip()}
+        selected_items: list[dict] = []
+        for item in (batch.get("items") or []):
+            comp_id = str(item.get("id"))
+            filtered_results: list[dict] = []
+            for idx, result in enumerate(item.get("results") or []):
+                race_key = f"{comp_id}:{idx}"
+                if race_key in selected_keys:
+                    filtered_results.append(result)
+            if filtered_results:
+                selected_items.append(
+                    {
+                        "id": comp_id,
+                        "competition": item["competition"],
+                        "results": filtered_results,
+                    }
+                )
+
+        if not selected_items:
+            return render_import_preview_page(
+                request,
+                current_user,
+                batch,
+                error_message="Selecteer minimaal één rit om te importeren.",
+            )
+
+        selected_signatures = {
+            (item.get("signature") or "").strip()
+            for item in selected_items
+            if (item.get("signature") or "").strip()
+        }
+        if selected_signatures:
+            placeholders = ",".join("?" for _ in selected_signatures)
+            conn.execute(
+                f"""
+                DELETE FROM osta_import_blacklist
+                WHERE user_id = ? AND comp_signature IN ({placeholders})
+                """,
+                (int(current_user["id"]), *sorted(selected_signatures)),
+            )
+
+        source = (batch.get("source") or "").strip().lower()
+        force_add_mode = action == "add"
+        if source == "osta":
+            summary = import_osta_competitions(
+                conn,
+                current_user,
+                {
+                    "pid": str((batch.get("meta") or {}).get("pid") or ""),
+                    "competitions": [
+                        {"competition": item["competition"], "results": item["results"]}
+                        for item in selected_items
+                    ],
+                },
+                update_existing=not force_add_mode,
+                force_new_competition=force_add_mode,
+            )
+            success_message = (
+                f"{summary['imported_competitions']} wedstrijden aangemaakt, "
+                f"{summary['imported_races']} ritten geimporteerd en "
+                f"{summary['updated_races']} bestaande ritten bijgewerkt."
+            )
+            if force_add_mode:
+                success_message = (
+                    f"{summary['imported_competitions']} wedstrijden aangemaakt en "
+                    f"{summary['imported_races']} ritten toegevoegd als nieuwe wedstrijddata."
+                )
+            context_key = "osta_success_message"
+        else:
+            summary = import_generic_competitions(
+                conn,
+                current_user,
+                [
+                    {"competition": item["competition"], "results": item["results"]}
+                    for item in selected_items
+                ],
+                force_new_competition=force_add_mode,
+            )
+            if force_add_mode:
+                success_message = (
+                    f"{summary['imported_competitions']} wedstrijden aangemaakt en "
+                    f"{summary['imported_races']} ritten toegevoegd als nieuwe wedstrijddata."
+                )
+            else:
+                success_message = (
+                    f"{summary['imported_competitions']} wedstrijden aangemaakt, "
+                    f"{summary['imported_races']} ritten geimporteerd en "
+                    f"{summary['updated_races']} dubbelen overgeslagen."
+                )
+            context_key = "ssr_success_message" if source == "ssr" else "pdf_success_message"
+
+        delete_import_preview_batch(conn, batch_id_value, int(current_user["id"]))
+
+    if int(summary["imported_races"]) == 0 and int(summary["imported_competitions"]) == 0:
+        if source == "ssr":
+            return render_import_page(request, current_user, ssr_error_message="Geen nieuwe data geimporteerd.")
+        if source == "pdf":
+            return render_import_page(request, current_user, pdf_error_message="Geen nieuwe data geimporteerd.")
+        return render_import_page(request, current_user, osta_error_message="Geen nieuwe data geimporteerd.")
+
+    if context_key == "ssr_success_message":
+        return render_import_page(request, current_user, ssr_success_message=success_message)
+    if context_key == "pdf_success_message":
+        return render_import_page(request, current_user, pdf_success_message=success_message)
+    return render_import_page(request, current_user, osta_success_message=success_message)
+
+
+@app.post("/import/blacklist/remove")
+def import_blacklist_remove_post(
+    request: Request,
+    selected_signatures: list[str] = Form([]),
+):
+    current_user = require_user(request)
+    signatures = sorted({(value or "").strip() for value in selected_signatures if (value or "").strip()})
+    if not signatures:
+        return render_import_page(
+            request,
+            current_user,
+            blacklist_error_message="Selecteer minimaal één item om van de blacklist te halen.",
+        )
+
+    deleted = 0
+    with db() as conn:
+        for signature in signatures:
+            result = conn.execute(
+                """
+                DELETE FROM osta_import_blacklist
+                WHERE user_id = ? AND comp_signature = ?
+                """,
+                (int(current_user["id"]), signature),
+            )
+            deleted += int(result.rowcount or 0)
+
+    if deleted == 0:
+        return render_import_page(
+            request,
+            current_user,
+            blacklist_error_message="Geen blacklist-items verwijderd.",
+        )
+    if deleted == 1:
+        message = "1 item van de blacklist gehaald."
+    else:
+        message = f"{deleted} items van de blacklist gehaald."
     return render_import_page(
         request,
         current_user,
-        osta_search_name=search_name_value,
-        osta_pid=parsed["pid"],
-        osta_season=season_value,
-        osta_update_existing=osta_update_existing == "on",
-        osta_success_message=(
-            f"{summary['imported_competitions']} wedstrijden aangemaakt, "
-            f"{summary['imported_races']} ritten geimporteerd en "
-            f"{summary['updated_races']} bestaande ritten bijgewerkt voor OSTA pid {parsed['pid']}."
-            f"{skipped_summary}"
-        ),
+        blacklist_success_message=message,
+    )
+
+
+@app.post("/osta/detection/ignore")
+def osta_detection_ignore_post(
+    request: Request,
+    comp_signature: str = Form(""),
+    comp_name: str = Form(""),
+    comp_date: str = Form(""),
+    pid: str = Form(""),
+    race_count: str = Form("0"),
+):
+    current_user = require_user(request)
+    signature_value = (comp_signature or "").strip()
+    name_value = (comp_name or "").strip()
+    date_value = (comp_date or "").strip()
+    pid_value = (pid or "").strip()
+    try:
+        parsed_date = parse_date_any(date_value)
+    except ValueError:
+        return RedirectResponse("/?osta_notice=ignore_error", status_code=303)
+
+    if not signature_value:
+        signature_value = osta_competition_signature(parsed_date, name_value, pid_value)
+
+    race_count_value = 0
+    try:
+        race_count_value = max(0, int(race_count or "0"))
+    except ValueError:
+        race_count_value = 0
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO osta_import_blacklist(
+              user_id, comp_signature, comp_name, comp_date, pid, race_count, created_at
+            )
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                int(current_user["id"]),
+                signature_value,
+                name_value or "OSTA competitie",
+                parsed_date,
+                pid_value or None,
+                race_count_value,
+                now_iso(),
+            ),
+        )
+
+    return RedirectResponse("/?osta_notice=ignored", status_code=303)
+
+
+@app.post("/osta/detection/import")
+def osta_detection_import_post(request: Request):
+    current_user = require_user(request)
+
+    with db() as conn:
+        config = get_osta_monitor_config(conn, int(current_user["id"]))
+        if not config:
+            return RedirectResponse("/?osta_notice=import_error", status_code=303)
+
+        search_name = default_osta_search_name(config["search_name"] or current_user["skater_name"])
+        try:
+            season = normalize_osta_season(config["season"] or default_ssr_season())
+        except ValueError:
+            season = default_ssr_season()
+        pid = (config["pid"] or "").strip()
+
+        try:
+            parsed = extract_osta_results(search_name, season, pid)
+        except ValueError:
+            return RedirectResponse("/?osta_notice=import_error", status_code=303)
+
+        candidates = list_new_osta_competitions(conn, current_user, parsed)
+        if not candidates:
+            return RedirectResponse("/?osta_notice=nonew", status_code=303)
+
+        candidate_signatures = {item["signature"] for item in candidates}
+        filtered_competitions = []
+        for item in parsed["competitions"]:
+            comp = item["competition"]
+            signature = osta_competition_signature(comp["date"], comp["name"], parsed["pid"])
+            if signature in candidate_signatures:
+                filtered_competitions.append(item)
+
+        summary = import_osta_competitions(
+            conn,
+            current_user,
+            {"pid": parsed["pid"], "competitions": filtered_competitions},
+            update_existing=False,
+        )
+        upsert_osta_monitor_config(
+            conn,
+            int(current_user["id"]),
+            search_name=search_name,
+            season=season,
+            pid=parsed["pid"],
+        )
+
+    imported_total = int(summary["imported_competitions"]) + int(summary["updated_races"])
+    if imported_total == 0 and int(summary["imported_races"]) == 0:
+        return RedirectResponse("/?osta_notice=nonew", status_code=303)
+    return RedirectResponse(
+        f"/?osta_notice=imported&osta_count={int(summary['imported_races'])}",
+        status_code=303,
     )
 
 

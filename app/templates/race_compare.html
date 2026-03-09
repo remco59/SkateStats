@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Vergelijk races</h1>
+  <p class="muted">
+    Basisrit: {{ base_race.distance_m }}m &bull; {{ fmt_date(base_race.competition_date) }} &bull; {{ base_race.competition_name }}
+  </p>
+
+  <div class="row-actions">
+    <a class="btn" href="/races/{{ base_race.id }}">Terug naar basisrit</a>
+    {% if swap_href %}
+      <a class="btn" href="{{ swap_href }}">Wissel basis en vergelijking</a>
+    {% endif %}
+  </div>
+
+  <section class="card">
+    <h2>Vergelijk andere rit</h2>
+    {% if comparison_candidates|length == 0 %}
+      <p class="muted">Geen andere ritten op deze afstand beschikbaar.</p>
+    {% else %}
+      <form method="get" action="/races/{{ base_race.id }}/compare" class="form">
+        <label>Vergelijkingsrit
+          <select name="compare_race_id">
+            {% for option in comparison_candidates %}
+              <option value="{{ option.id }}" {% if selected_compare_id == (option.id|string) %}selected{% endif %}>
+                {{ fmt_date(option.competition_date) }} - {{ option.competition_name }} - {{ fmt_ms(option.total_time_ms) }}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="row-actions">
+          <button type="submit">Vergelijk races</button>
+        </div>
+      </form>
+    {% endif %}
+  </section>
+
+  {% if comparison and compare_race %}
+    <section class="card">
+      <h2>Analyse</h2>
+      <div class="comparison-grid">
+        <div class="stat">
+          <div class="label">Tijdsverschil</div>
+          <div class="value mono {% if comparison.highlights.total_delta_ms is not none and comparison.highlights.total_delta_ms <= 0 %}delta-good{% elif comparison.highlights.total_delta_ms is not none %}delta-bad{% endif %}">
+            {{ format_delta(comparison.highlights.total_delta_ms) }}
+          </div>
+        </div>
+        <div class="stat">
+          <div class="label">Opening</div>
+          <div class="value mono {% if comparison.highlights.opening_delta_ms is not none and comparison.highlights.opening_delta_ms <= 0 %}delta-good{% elif comparison.highlights.opening_delta_ms is not none %}delta-bad{% endif %}">
+            {{ format_delta(comparison.highlights.opening_delta_ms) }}
+          </div>
+        </div>
+        <div class="stat">
+          <div class="label">Slotronde</div>
+          <div class="value mono {% if comparison.highlights.slot_delta_ms is not none and comparison.highlights.slot_delta_ms <= 0 %}delta-good{% elif comparison.highlights.slot_delta_ms is not none %}delta-bad{% endif %}">
+            {{ format_delta(comparison.highlights.slot_delta_ms) }}
+          </div>
+        </div>
+        <div class="stat">
+          <div class="label">Verval</div>
+          <div class="value mono {% if comparison.highlights.verval_delta_ms is not none and comparison.highlights.verval_delta_ms <= 0 %}delta-good{% elif comparison.highlights.verval_delta_ms is not none %}delta-bad{% endif %}">
+            {{ format_delta(comparison.highlights.verval_delta_ms) }}
+          </div>
+        </div>
+      </div>
+      <p><strong>Waar werd tijd gewonnen of verloren?</strong> {{ comparison.samenvatting_tekst }}</p>
+    </section>
+
+    <section class="card">
+      <h2>Ritcontext</h2>
+      <div class="compare-context-grid">
+        <div class="stat">
+          <div class="label">Basisrit</div>
+          <div class="value mono">{{ fmt_ms(base_race.total_time_ms) }}</div>
+          <div class="comparison-subtext">Datum: {{ fmt_date(base_race.competition_date) }}</div>
+          <div class="comparison-subtext">Baan: {{ base_race.venue or "-" }}</div>
+          <div class="comparison-subtext">Tegenstander: {{ base_race.opponent or "-" }}</div>
+          <div class="comparison-subtext">Startbaan: {{ base_race.lane or "-" }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Vergelijkingsrit</div>
+          <div class="value mono">{{ fmt_ms(compare_race.total_time_ms) }}</div>
+          <div class="comparison-subtext">Datum: {{ fmt_date(compare_race.competition_date) }}</div>
+          <div class="comparison-subtext">Baan: {{ compare_race.venue or "-" }}</div>
+          <div class="comparison-subtext">Tegenstander: {{ compare_race.opponent or "-" }}</div>
+          <div class="comparison-subtext">Startbaan: {{ compare_race.lane or "-" }}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Waar werd tijd gewonnen of verloren?</h2>
+      {% if comparison.delta_chart %}
+        <h3>Tijdsverschil per split</h3>
+        <div class="split-chart-wrap">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.delta_chart.width }} {{ comparison.delta_chart.height }}" preserveAspectRatio="none" aria-label="Tijdsverschil per split">
+            {% for tick in comparison.delta_chart.y_ticks %}
+              <line x1="{{ comparison.delta_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.delta_chart.width - comparison.delta_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
+              <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
+            {% endfor %}
+            <line x1="{{ comparison.delta_chart.left_padding }}" y1="{{ comparison.delta_chart.zero_y }}" x2="{{ comparison.delta_chart.width - comparison.delta_chart.right_padding }}" y2="{{ comparison.delta_chart.zero_y }}" class="split-chart-grid split-chart-grid-strong"></line>
+            <polyline points="{{ comparison.delta_chart.points }}" class="split-chart-line split-chart-line-compare" pathLength="100"></polyline>
+            {% for point in comparison.delta_chart.circles %}
+              <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4.5" class="split-chart-point split-chart-point-compare"></circle>
+            {% endfor %}
+            {% for tick in comparison.delta_chart.x_ticks %}
+              <text x="{{ tick.x }}" y="{{ comparison.delta_chart.baseline_y + 18 }}" class="split-chart-axis split-chart-axis-x">{{ tick.label }}</text>
+            {% endfor %}
+          </svg>
+        </div>
+      {% endif %}
+
+      {% if comparison.cumulatieve_delta_chart %}
+        <h3>Cumulatief tijdsverschil</h3>
+        <div class="split-chart-wrap">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.cumulatieve_delta_chart.width }} {{ comparison.cumulatieve_delta_chart.height }}" preserveAspectRatio="none" aria-label="Cumulatief tijdsverschil">
+            {% for tick in comparison.cumulatieve_delta_chart.y_ticks %}
+              <line x1="{{ comparison.cumulatieve_delta_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.cumulatieve_delta_chart.width - comparison.cumulatieve_delta_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
+              <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
+            {% endfor %}
+            <line x1="{{ comparison.cumulatieve_delta_chart.left_padding }}" y1="{{ comparison.cumulatieve_delta_chart.zero_y }}" x2="{{ comparison.cumulatieve_delta_chart.width - comparison.cumulatieve_delta_chart.right_padding }}" y2="{{ comparison.cumulatieve_delta_chart.zero_y }}" class="split-chart-grid split-chart-grid-strong"></line>
+            <polyline points="{{ comparison.cumulatieve_delta_chart.points }}" class="split-chart-line split-chart-line-compare" pathLength="100"></polyline>
+            {% for point in comparison.cumulatieve_delta_chart.circles %}
+              <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4.5" class="split-chart-point split-chart-point-compare"></circle>
+            {% endfor %}
+            {% for tick in comparison.cumulatieve_delta_chart.x_ticks %}
+              <text x="{{ tick.x }}" y="{{ comparison.cumulatieve_delta_chart.baseline_y + 18 }}" class="split-chart-axis split-chart-axis-x">{{ tick.label }}</text>
+            {% endfor %}
+          </svg>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Rondetijden</h2>
+      {% if comparison.lap_overlay_chart %}
+        <div class="comparison-legend">
+          <span class="legend-item">
+            <span class="legend-dot legend-dot-base"></span>
+            Basisrit
+          </span>
+          <span class="legend-item">
+            <span class="legend-dot legend-dot-compare"></span>
+            Vergelijkingsrit
+          </span>
+        </div>
+        <div class="split-chart-wrap">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.lap_overlay_chart.width }} {{ comparison.lap_overlay_chart.height }}" preserveAspectRatio="none" aria-label="Overzicht van rondetijden">
+            {% for tick in comparison.lap_overlay_chart.y_ticks %}
+              <line x1="{{ comparison.lap_overlay_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.lap_overlay_chart.width - comparison.lap_overlay_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
+              <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
+            {% endfor %}
+            <line x1="{{ comparison.lap_overlay_chart.left_padding }}" y1="{{ comparison.lap_overlay_chart.baseline_y }}" x2="{{ comparison.lap_overlay_chart.width - comparison.lap_overlay_chart.right_padding }}" y2="{{ comparison.lap_overlay_chart.baseline_y }}" class="split-chart-grid split-chart-grid-strong"></line>
+            <polyline points="{{ comparison.lap_overlay_chart.base_points }}" class="split-chart-line split-chart-line-base" pathLength="100"></polyline>
+            <polyline points="{{ comparison.lap_overlay_chart.compare_points }}" class="split-chart-line split-chart-line-compare" pathLength="100"></polyline>
+            {% for point in comparison.lap_overlay_chart.base_circles %}
+              <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4" class="split-chart-point split-chart-point-base"></circle>
+            {% endfor %}
+            {% for point in comparison.lap_overlay_chart.compare_circles %}
+              <circle cx="{{ point.x }}" cy="{{ point.y }}" r="4" class="split-chart-point split-chart-point-compare"></circle>
+            {% endfor %}
+            {% for tick in comparison.lap_overlay_chart.x_ticks %}
+              <text x="{{ tick.x }}" y="{{ comparison.lap_overlay_chart.baseline_y + 18 }}" class="split-chart-axis split-chart-axis-x">{{ tick.label }}</text>
+            {% endfor %}
+          </svg>
+        </div>
+      {% else %}
+        <p class="muted">Geen rondetijden beschikbaar.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Ritopbouw</h2>
+      <div class="comparison-grid">
+        <div class="stat">
+          <div class="label">Opening</div>
+          <div class="comparison-subtext">Basisrit: <span class="mono">{{ fmt_ms(comparison.pacing.basis_opening_ms) }}</span></div>
+          <div class="comparison-subtext">Vergelijkingsrit: <span class="mono">{{ fmt_ms(comparison.pacing.vergelijking_opening_ms) }}</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Slotronde</div>
+          <div class="comparison-subtext">Basisrit: <span class="mono">{{ fmt_ms(comparison.pacing.basis_slot_ms) }}</span></div>
+          <div class="comparison-subtext">Vergelijkingsrit: <span class="mono">{{ fmt_ms(comparison.pacing.vergelijking_slot_ms) }}</span></div>
+        </div>
+        <div class="stat">
+          <div class="label">Verval</div>
+          <div class="comparison-subtext">Basisrit: <span class="mono">{{ fmt_ms(comparison.pacing.basis_verval_ms) }}</span></div>
+          <div class="comparison-subtext">Vergelijkingsrit: <span class="mono">{{ fmt_ms(comparison.pacing.vergelijking_verval_ms) }}</span></div>
+        </div>
+      </div>
+      <div class="compare-context-grid">
+        <div class="stat">
+          <div class="label">Labels basisrit</div>
+          {% if comparison.pacing.basis_labels %}
+            <div class="comparison-labels">
+              {% for label in comparison.pacing.basis_labels %}
+                <span class="goal-chip">{{ label }}</span>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="muted">Geen pacinglabels beschikbaar.</p>
+          {% endif %}
+        </div>
+        <div class="stat">
+          <div class="label">Labels vergelijkingsrit</div>
+          {% if comparison.pacing.vergelijking_labels %}
+            <div class="comparison-labels">
+              {% for label in comparison.pacing.vergelijking_labels %}
+                <span class="goal-chip">{{ label }}</span>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="muted">Geen pacinglabels beschikbaar.</p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Sterkste en zwakste onderdeel</h2>
+      <div class="comparison-grid">
+        <div class="stat">
+          <div class="label">Sterkste onderdeel</div>
+          {% if comparison.onderdelen.sterkste %}
+            <div class="value mono">Split {{ comparison.onderdelen.sterkste.index }}</div>
+            <div class="comparison-subtext">{{ comparison.onderdelen.sterkste.distance_m if comparison.onderdelen.sterkste.distance_m is not none else "-" }}m &bull; {{ format_delta(comparison.onderdelen.sterkste.split_delta_ms) }}</div>
+          {% else %}
+            <div class="comparison-subtext">Niet beschikbaar.</div>
+          {% endif %}
+        </div>
+        <div class="stat">
+          <div class="label">Zwakste onderdeel</div>
+          {% if comparison.onderdelen.zwakste %}
+            <div class="value mono">Split {{ comparison.onderdelen.zwakste.index }}</div>
+            <div class="comparison-subtext">{{ comparison.onderdelen.zwakste.distance_m if comparison.onderdelen.zwakste.distance_m is not none else "-" }}m &bull; {{ format_delta(comparison.onderdelen.zwakste.split_delta_ms) }}</div>
+          {% else %}
+            <div class="comparison-subtext">Niet beschikbaar.</div>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Splitvergelijking</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Splitnummer</th>
+              <th>Afstand</th>
+              <th>Tijd basisrit</th>
+              <th>Tijd vergelijkingsrit</th>
+              <th>Verschil</th>
+              <th>Cumulatief verschil</th>
+              <th>400m-equivalent</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for split in comparison.splits %}
+              <tr>
+                <td class="mono">{{ split.index }}</td>
+                <td class="mono">{{ split.distance_m if split.distance_m is not none else "-" }}m</td>
+                <td class="mono">{% if split.base_split is not none %}{{ "%.2f"|format(split.base_split) }}{% else %}-{% endif %}</td>
+                <td class="mono">{% if split.compare_split is not none %}{{ "%.2f"|format(split.compare_split) }}{% else %}-{% endif %}</td>
+                <td class="mono">
+                  {% if split.split_delta_ms is none %}
+                    -
+                  {% else %}
+                    <span class="{% if split.split_delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">{{ format_delta(split.split_delta_ms) }}</span>
+                  {% endif %}
+                </td>
+                <td class="mono">
+                  {% if split.cumulative_delta_ms is none %}
+                    -
+                  {% else %}
+                    <span class="{% if split.cumulative_delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">{{ format_delta(split.cumulative_delta_ms) }}</span>
+                  {% endif %}
+                </td>
+                <td class="mono">
+                  {% if split.base_400 is none or split.compare_400 is none %}
+                    -
+                  {% else %}
+                    {{ "%.2f"|format(split.base_400) }} / {{ "%.2f"|format(split.compare_400) }}
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}
