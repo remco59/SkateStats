@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <h1>Vergelijk races</h1>
   <p class="muted">
@@ -6,35 +6,307 @@
   </p>
 
   <div class="row-actions">
+    {% if comparison_candidates|length > 0 %}
+      <button type="button" class="compare-picker-btn" id="open-compare-modal">Kies rit voor vergelijking</button>
+    {% endif %}
     <a class="btn" href="/races/{{ base_race.id }}">Terug naar basisrit</a>
     {% if swap_href %}
       <a class="btn" href="{{ swap_href }}">Wissel basis en vergelijking</a>
     {% endif %}
   </div>
 
-  <section class="card">
-    <h2>Vergelijk andere rit</h2>
-    {% if comparison_candidates|length == 0 %}
-      <p class="muted">Geen andere ritten op deze afstand beschikbaar.</p>
-    {% else %}
-      <form method="get" action="/races/{{ base_race.id }}/compare" class="form">
-        <label>Vergelijkingsrit
-          <select name="compare_race_id">
-            {% for option in comparison_candidates %}
-              <option value="{{ option.id }}" {% if selected_compare_id == (option.id|string) %}selected{% endif %}>
-                {{ fmt_date(option.competition_date) }} - {{ option.competition_name }} - {{ fmt_ms(option.total_time_ms) }}
-              </option>
-            {% endfor %}
-          </select>
-        </label>
-        <div class="row-actions">
-          <button type="submit">Vergelijk races</button>
+  {% if comparison_candidates|length == 0 %}
+    <p class="muted">Geen andere ritten op deze afstand beschikbaar.</p>
+  {% else %}
+    {% set selected_option = compare_race %}
+    <form method="get" action="/races/{{ base_race.id }}/compare" class="form" id="compare-select-form">
+      <input type="hidden" name="compare_race_id" id="compare-race-id" value="{{ selected_option.id if selected_option else '' }}" />
+      <div class="hint text-strong" id="selected-compare-label">
+        {% if selected_option %}
+          {{ fmt_date(selected_option.competition_date) }} - {{ selected_option.competition_name }} - {{ fmt_ms(selected_option.total_time_ms) }}
+        {% else %}
+          Geen vergelijkingsrit geselecteerd.
+        {% endif %}
+      </div>
+    </form>
+
+    <dialog class="dialog-backdrop dialog-wide" id="compare-race-dialog">
+      <div class="dialog-content compare-dialog-content">
+        <div class="row">
+          <h3>Selecteer vergelijkingsrit</h3>
+          <button type="button" class="btn btn-secondary" id="close-compare-modal">Sluiten</button>
         </div>
-      </form>
-    {% endif %}
-  </section>
+
+        <form class="form compare-filters" id="compare-filter-form">
+          <label>Zoeken
+            <input type="search" id="compare-filter-query" placeholder="Zoek op wedstrijd of locatie" />
+          </label>
+
+          <div class="grid2">
+            <label>Locatie
+              <select id="compare-filter-venue">
+                <option value="">Alle locaties</option>
+              </select>
+            </label>
+
+            <div></div>
+          </div>
+
+          <div class="grid2">
+            <label>Datum vanaf
+              <div class="date-input">
+                <input class="date-input-text" id="compare-filter-date-from" placeholder="dd/mm/jjjj" inputmode="numeric" />
+                <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
+                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
+              </div>
+            </label>
+
+            <label>Datum t/m
+              <div class="date-input">
+                <input class="date-input-text" id="compare-filter-date-to" placeholder="dd/mm/jjjj" inputmode="numeric" />
+                <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
+                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
+              </div>
+            </label>
+          </div>
+
+          <div class="row-actions">
+            <button type="button" class="btn btn-secondary" id="compare-filter-reset">Reset filters</button>
+          </div>
+        </form>
+
+        <div class="table-scroll compare-table-wrap">
+          <table>
+            <thead>
+              <tr><th>Datum</th><th>Tijd</th><th>Locatie</th><th>Wedstrijd</th></tr>
+            </thead>
+            <tbody id="compare-candidates-body">
+              {% for option in comparison_candidates %}
+                <tr
+                  class="compare-row"
+                  role="button"
+                  tabindex="0"
+                  data-id="{{ option.id }}"
+                  data-date="{{ option.competition_date or '' }}"
+                  data-venue="{{ (option.venue or '')|lower }}"
+                  data-search="{{ ((option.competition_name or '') ~ ' ' ~ (option.venue or ''))|lower }}"
+                  data-label="{{ fmt_date(option.competition_date) }} - {{ option.competition_name }} - {{ fmt_ms(option.total_time_ms) }}"
+                >
+                  <td class="mono date-nowrap">{{ fmt_date(option.competition_date) }}</td>
+                  <td class="mono">{{ fmt_ms(option.total_time_ms) }}</td>
+                  <td>{{ option.venue or "-" }}</td>
+                  <td>{{ option.competition_name }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p class="muted" id="compare-no-results" hidden>Geen ritten gevonden voor deze filters.</p>
+        </div>
+      </div>
+    </dialog>
+  {% endif %}
+
+  <script>
+    (function () {
+      const openBtn = document.getElementById("open-compare-modal");
+      const closeBtn = document.getElementById("close-compare-modal");
+      const dialog = document.getElementById("compare-race-dialog");
+      const compareForm = document.getElementById("compare-select-form");
+      const selectedInput = document.getElementById("compare-race-id");
+      const selectedLabel = document.getElementById("selected-compare-label");
+      const candidatesBody = document.getElementById("compare-candidates-body");
+      const noResults = document.getElementById("compare-no-results");
+      const filterForm = document.getElementById("compare-filter-form");
+      const queryInput = document.getElementById("compare-filter-query");
+      const venueInput = document.getElementById("compare-filter-venue");
+      const dateFromInput = document.getElementById("compare-filter-date-from");
+      const dateToInput = document.getElementById("compare-filter-date-to");
+      const resetBtn = document.getElementById("compare-filter-reset");
+      const autoOpenCompareModal = {{ "true" if auto_open_compare_modal else "false" }};
+
+      if (!openBtn || !closeBtn || !dialog || !selectedInput || !selectedLabel || !candidatesBody || !noResults) {
+        return;
+      }
+
+      const rows = Array.from(candidatesBody.querySelectorAll("tr"));
+      const venueSeen = new Set();
+      Array.from(venueInput.options).forEach((option) => {
+        const key = (option.value || "").trim().toLowerCase();
+        if (key) {
+          venueSeen.add(key);
+        }
+      });
+      rows.forEach((row) => {
+        const venue = (row.dataset.venue || "").trim();
+        if (!venue || venueSeen.has(venue)) {
+          return;
+        }
+        venueSeen.add(venue);
+        const option = document.createElement("option");
+        option.value = venue;
+        option.textContent = row.children[2] ? row.children[2].textContent.trim() : venue;
+        venueInput.appendChild(option);
+      });
+
+      function normalizeDate(value) {
+        const raw = (value || "").trim();
+        if (!raw) {
+          return "";
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+          return raw;
+        }
+        const match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+        if (!match) {
+          return "";
+        }
+        const day = match[1].padStart(2, "0");
+        const month = match[2].padStart(2, "0");
+        const year = match[3];
+        return `${year}-${month}-${day}`;
+      }
+
+      function applyFilters() {
+        const query = (queryInput.value || "").trim().toLowerCase();
+        const venue = (venueInput.value || "").trim().toLowerCase();
+        const dateFrom = normalizeDate(dateFromInput.value);
+        const dateTo = normalizeDate(dateToInput.value);
+        let visibleCount = 0;
+
+        rows.forEach((row) => {
+          const rowSearch = row.dataset.search || "";
+          const rowVenue = row.dataset.venue || "";
+          const rowDate = row.dataset.date || "";
+          const queryMatch = !query || rowSearch.includes(query);
+          const venueMatch = !venue || rowVenue === venue;
+          const dateFromMatch = !dateFrom || (rowDate && rowDate >= dateFrom);
+          const dateToMatch = !dateTo || (rowDate && rowDate <= dateTo);
+          const visible = queryMatch && venueMatch && dateFromMatch && dateToMatch;
+          row.hidden = !visible;
+          if (visible) {
+            visibleCount += 1;
+          }
+        });
+
+        noResults.hidden = visibleCount !== 0;
+      }
+
+      function openDialog() {
+        if (typeof dialog.showModal === "function") {
+          dialog.showModal();
+        } else {
+          dialog.setAttribute("open", "open");
+        }
+      }
+
+      function closeDialog() {
+        if (typeof dialog.close === "function") {
+          dialog.close();
+        } else {
+          dialog.removeAttribute("open");
+        }
+      }
+
+      function selectRow(row) {
+        if (!row) {
+          return;
+        }
+        selectedInput.value = row.dataset.id || "";
+        selectedLabel.textContent = row.dataset.label || "";
+        closeDialog();
+        if (compareForm && typeof compareForm.requestSubmit === "function") {
+          compareForm.requestSubmit();
+        } else if (compareForm) {
+          compareForm.submit();
+        }
+      }
+
+      openBtn.addEventListener("click", () => {
+        applyFilters();
+        openDialog();
+      });
+
+      closeBtn.addEventListener("click", closeDialog);
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) {
+          closeDialog();
+        }
+      });
+
+      rows.forEach((row) => {
+        row.addEventListener("click", () => {
+          if (row.hidden) {
+            return;
+          }
+          selectRow(row);
+        });
+
+        row.addEventListener("keydown", (event) => {
+          if (row.hidden) {
+            return;
+          }
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          selectRow(row);
+        });
+      });
+
+      [queryInput, venueInput, dateFromInput, dateToInput].forEach((input) => {
+        if (!input) {
+          return;
+        }
+        input.addEventListener("input", applyFilters);
+        input.addEventListener("change", applyFilters);
+      });
+
+      if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+          queryInput.value = "";
+          venueInput.value = "";
+          dateFromInput.value = "";
+          dateToInput.value = "";
+          applyFilters();
+        });
+      }
+
+      if (filterForm) {
+        filterForm.addEventListener("submit", (event) => {
+          event.preventDefault();
+        });
+      }
+
+      if (autoOpenCompareModal) {
+        applyFilters();
+        openDialog();
+      }
+    })();
+  </script>
 
   {% if comparison and compare_race %}
+    <section class="card">
+      <h2>Ritcontext</h2>
+      <div class="compare-context-grid">
+        <div class="stat">
+          <div class="label">Basisrit</div>
+          <div class="value mono">{{ fmt_ms(base_race.total_time_ms) }}</div>
+          <div class="comparison-subtext">Datum: {{ fmt_date(base_race.competition_date) }}</div>
+          <div class="comparison-subtext">Baan: {{ base_race.venue or "-" }}</div>
+          <div class="comparison-subtext">Tegenstander: {{ base_race.opponent or "-" }}</div>
+          <div class="comparison-subtext">Startbaan: {{ base_race.lane or "-" }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Vergelijkingsrit</div>
+          <div class="value mono">{{ fmt_ms(compare_race.total_time_ms) }}</div>
+          <div class="comparison-subtext">Datum: {{ fmt_date(compare_race.competition_date) }}</div>
+          <div class="comparison-subtext">Baan: {{ compare_race.venue or "-" }}</div>
+          <div class="comparison-subtext">Tegenstander: {{ compare_race.opponent or "-" }}</div>
+          <div class="comparison-subtext">Startbaan: {{ compare_race.lane or "-" }}</div>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Analyse</h2>
       <div class="comparison-grid">
@@ -67,33 +339,11 @@
     </section>
 
     <section class="card">
-      <h2>Ritcontext</h2>
-      <div class="compare-context-grid">
-        <div class="stat">
-          <div class="label">Basisrit</div>
-          <div class="value mono">{{ fmt_ms(base_race.total_time_ms) }}</div>
-          <div class="comparison-subtext">Datum: {{ fmt_date(base_race.competition_date) }}</div>
-          <div class="comparison-subtext">Baan: {{ base_race.venue or "-" }}</div>
-          <div class="comparison-subtext">Tegenstander: {{ base_race.opponent or "-" }}</div>
-          <div class="comparison-subtext">Startbaan: {{ base_race.lane or "-" }}</div>
-        </div>
-        <div class="stat">
-          <div class="label">Vergelijkingsrit</div>
-          <div class="value mono">{{ fmt_ms(compare_race.total_time_ms) }}</div>
-          <div class="comparison-subtext">Datum: {{ fmt_date(compare_race.competition_date) }}</div>
-          <div class="comparison-subtext">Baan: {{ compare_race.venue or "-" }}</div>
-          <div class="comparison-subtext">Tegenstander: {{ compare_race.opponent or "-" }}</div>
-          <div class="comparison-subtext">Startbaan: {{ compare_race.lane or "-" }}</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
       <h2>Waar werd tijd gewonnen of verloren?</h2>
       {% if comparison.delta_chart %}
         <h3>Tijdsverschil per split</h3>
         <div class="split-chart-wrap">
-          <svg class="split-chart" viewBox="0 0 {{ comparison.delta_chart.width }} {{ comparison.delta_chart.height }}" preserveAspectRatio="none" aria-label="Tijdsverschil per split">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.delta_chart.width }} {{ comparison.delta_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Tijdsverschil per split">
             {% for tick in comparison.delta_chart.y_ticks %}
               <line x1="{{ comparison.delta_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.delta_chart.width - comparison.delta_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
               <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
@@ -113,7 +363,7 @@
       {% if comparison.cumulatieve_delta_chart %}
         <h3>Cumulatief tijdsverschil</h3>
         <div class="split-chart-wrap">
-          <svg class="split-chart" viewBox="0 0 {{ comparison.cumulatieve_delta_chart.width }} {{ comparison.cumulatieve_delta_chart.height }}" preserveAspectRatio="none" aria-label="Cumulatief tijdsverschil">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.cumulatieve_delta_chart.width }} {{ comparison.cumulatieve_delta_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Cumulatief tijdsverschil">
             {% for tick in comparison.cumulatieve_delta_chart.y_ticks %}
               <line x1="{{ comparison.cumulatieve_delta_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.cumulatieve_delta_chart.width - comparison.cumulatieve_delta_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
               <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
@@ -145,7 +395,7 @@
           </span>
         </div>
         <div class="split-chart-wrap">
-          <svg class="split-chart" viewBox="0 0 {{ comparison.lap_overlay_chart.width }} {{ comparison.lap_overlay_chart.height }}" preserveAspectRatio="none" aria-label="Overzicht van rondetijden">
+          <svg class="split-chart" viewBox="0 0 {{ comparison.lap_overlay_chart.width }} {{ comparison.lap_overlay_chart.height }}" preserveAspectRatio="xMidYMid meet" aria-label="Overzicht van rondetijden">
             {% for tick in comparison.lap_overlay_chart.y_ticks %}
               <line x1="{{ comparison.lap_overlay_chart.left_padding }}" y1="{{ tick.y }}" x2="{{ comparison.lap_overlay_chart.width - comparison.lap_overlay_chart.right_padding }}" y2="{{ tick.y }}" class="split-chart-grid"></line>
               <text x="0" y="{{ tick.y }}" class="split-chart-axis">{{ tick.label }}</text>
@@ -291,3 +541,4 @@
     </section>
   {% endif %}
 {% endblock %}
+

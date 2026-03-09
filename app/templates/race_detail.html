@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <h1>{{ race.distance_m }}m &bull; {{ race.competition_name }}</h1>
 
@@ -8,6 +8,7 @@
   </p>
 
   <div class="row-actions">
+    <a class="btn" href="/races/{{ race.id }}/compare">Vergelijk rit</a>
     <a class="btn" href="/races/{{ race.id }}/edit">Bewerken</a>
     <a class="btn" href="/races/new?competition_id={{ race.competition_id }}">Nieuwe rit</a>
     <form method="post" action="/races/{{ race.id }}/delete" class="inline-form" onsubmit="return confirm('Weet je zeker dat je deze rit wilt verwijderen?');">
@@ -68,13 +69,24 @@
       {% if race.lane %}
         <div class="stat">
           <div class="label">Startbaan</div>
-          <div class="value mono">{{ race.lane }}</div>
+          <div class="value mono lane-indicator">
+            {% set lane_value = race.lane or "" %}
+            {% set lane_norm = lane_value|lower %}
+            {% if "binnen" in lane_norm %}
+              <span class="lane-dot lane-dot-indoor" aria-label="Binnenbaan" title="Binnenbaan"></span>
+            {% elif "buiten" in lane_norm %}
+              <span class="lane-dot lane-dot-outdoor" aria-label="Buitenbaan" title="Buitenbaan"></span>
+            {% else %}
+              <span class="lane-dot lane-dot-unknown" aria-label="{{ race.lane }}" title="{{ race.lane }}"></span>
+            {% endif %}
+            <span>{{ race.lane }}</span>
+          </div>
         </div>
       {% endif %}
       {% if race.opponent %}
         <div class="stat">
           <div class="label">Tegenstander</div>
-          <div class="value">{{ race.opponent }}</div>
+          <div class="value mono">{{ race.opponent }}</div>
         </div>
       {% endif %}
     </div>
@@ -114,7 +126,7 @@
         <svg
           class="split-chart"
           viewBox="0 0 {{ split_chart.width }} {{ split_chart.height }}"
-          preserveAspectRatio="none"
+          preserveAspectRatio="xMidYMid meet"
           aria-label="Grafiek van rondetijden"
         >
           {% for tick in split_chart.y_ticks %}
@@ -152,13 +164,7 @@
     {% endif %}
   </section>
 
-  <section class="card">
-    <h2>Vergelijk races</h2>
-    <p class="muted">Bekijk waar tijd werd gewonnen of verloren ten opzichte van een andere rit op dezelfde afstand.</p>
-    <div class="row-actions">
-      <a class="btn" href="/races/{{ race.id }}/compare">Open vergelijking</a>
-    </div>
-  </section>
 {% endblock %}
+
 
 

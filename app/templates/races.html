@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <div class="row">
     <h1>Ritten</h1>
@@ -58,7 +58,7 @@
           <div class="date-input">
             <input class="date-input-text" name="date_from" value="{{ selected_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
             <input class="date-input-picker" type="date" value="{{ selected_date_from }}" tabindex="-1" aria-hidden="true" />
-            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
           </div>
         </label>
 
@@ -66,7 +66,7 @@
           <div class="date-input">
             <input class="date-input-text" name="date_to" value="{{ selected_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
             <input class="date-input-picker" type="date" value="{{ selected_date_to }}" tabindex="-1" aria-hidden="true" />
-            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
           </div>
         </label>
       </div>
@@ -88,7 +88,7 @@
         </thead>
         <tbody>
           {% for r in races %}
-            <tr>
+            <tr data-race-href="/races/{{ r.id }}">
               <td class="mono">{{ fmt_date(r.competition_date) }}</td>
               <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
               <td class="mono">
@@ -97,7 +97,21 @@
                   <span class="badge-pr">PR</span>
                 {% endif %}
               </td>
-              <td>{{ r.lane or "-" }}</td>
+              <td>
+                {% set lane_value = r.lane or "" %}
+                {% set lane_norm = lane_value|lower %}
+                {% if lane_value %}
+                  {% if "binnen" in lane_norm %}
+                    <span class="lane-dot lane-dot-indoor" aria-label="Binnenbaan" title="Binnenbaan"></span>
+                  {% elif "buiten" in lane_norm %}
+                    <span class="lane-dot lane-dot-outdoor" aria-label="Buitenbaan" title="Buitenbaan"></span>
+                  {% else %}
+                    <span class="lane-dot lane-dot-unknown" aria-label="{{ r.lane }}" title="{{ r.lane }}"></span>
+                  {% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
               <td>{{ r.venue or "-" }}</td>
               <td><a href="/competitions/{{ r.competition_id }}">{{ r.competition_name }}</a></td>
             </tr>
@@ -111,16 +125,28 @@
     (function () {
       const toggle = document.getElementById("race-filters-toggle");
       const panel = document.getElementById("race-filters-panel");
+      const rows = document.querySelectorAll("tbody tr[data-race-href]");
 
-      if (!toggle || !panel) {
-        return;
+      if (toggle && panel) {
+        toggle.addEventListener("click", () => {
+          const open = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", open ? "false" : "true");
+          panel.hidden = open;
+        });
       }
 
-      toggle.addEventListener("click", () => {
-        const open = toggle.getAttribute("aria-expanded") === "true";
-        toggle.setAttribute("aria-expanded", open ? "false" : "true");
-        panel.hidden = open;
+      rows.forEach((row) => {
+        row.addEventListener("click", (event) => {
+          const link = event.target.closest("a");
+          if (link) {
+            return;
+          }
+          window.location.href = row.dataset.raceHref;
+        });
       });
     })();
   </script>
 {% endblock %}
+
+
+

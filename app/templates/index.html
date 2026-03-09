@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <h1>Overzicht</h1>
 
@@ -48,7 +48,7 @@
           {% for item in osta_detection.available %}
             <tr>
               <td>{{ item.name }}</td>
-              <td class="mono">{{ fmt_date(item.date) }}</td>
+              <td class="mono date-nowrap">{{ fmt_date(item.date) }}</td>
               <td class="mono">{{ item.race_count }}</td>
               <td>
                 <form method="post" action="/osta/detection/ignore" class="inline-form">
@@ -95,7 +95,11 @@
         <div class="label">Favoriete afstand</div>
         <div class="value mono">{{ favorite_distance }}</div>
       </div>
-        <a href="/stats">Bekijk meer &gt;</a>
+      <a href="/stats" class="stat stat-more-card">
+        <span class="label">Meer statistieken</span>
+        <div class="value mono">Bekijk alles</div>
+      </a>
+    </div>
   </section>
 
   <div class="grid">
@@ -112,8 +116,13 @@
             {% for r in best_times %}
               <tr>
                 <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
-                <td class="mono">{{ fmt_ms(r.total_time_ms) }}</td>
-                <td class="mono">{{ fmt_date(r.competition_date) }}</td>
+                <td class="mono">
+                  {{ fmt_ms(r.total_time_ms) }}
+                  {% if r.is_recent_pr %}
+                    <span class="badge-pr">Nieuw PR</span>
+                  {% endif %}
+                </td>
+                <td class="mono date-nowrap">{{ fmt_date(r.competition_date) }}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -122,61 +131,70 @@
     </section>
 
     <section class="card">
-      <h2>Laatste wedstrijden</h2>
-      {% if comps|length == 0 %}
-        <p>Nog geen wedstrijden. Voeg er een toe bij <a href="/competitions">Wedstrijden</a>.</p>
+      <h2>Laatste wedstrijd</h2>
+      {% if not latest_comp_analysis %}
+        <p>Nog geen ritten beschikbaar. Voeg een rit toe via <a href="/races/new">Nieuwe tijd</a>.</p>
       {% else %}
+        <p class="muted">
+          <strong><a href="/competitions/{{ latest_comp_analysis.id }}" class="text-strong">{{ latest_comp_analysis.name }}</a></strong>
+        </p>
+        <p class="muted">
+          {% if latest_comp_analysis.venue %} {{ latest_comp_analysis.venue }}{% endif %}
+          &bull; <span class="mono date-nowrap">{{ fmt_date(latest_comp_analysis.competition_date) }}</span>
+        </p>
         <table>
           <thead>
-            <tr><th>Naam</th><th>Locatie</th><th>Datum</th></tr>
+            <tr><th>Rit</th><th>Eindtijd</th><th>Opening</th><th>T.o.v. PR</th></tr>
           </thead>
           <tbody>
-            {% for c in comps %}
+            {% for r in latest_comp_analysis.races %}
               <tr>
-                <td><a href="/competitions/{{ c.id }}">{{ c.name }}</a></td>
-                <td>{{ c.venue or "-" }}</td>
-                <td class="mono">{{ fmt_date(c.competition_date) }}</td>
+                <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
+                <td class="mono">
+                  {% if r.total_time_ms is not none %}
+                    {{ fmt_ms(r.total_time_ms) }}{% if r.dnf == 1 %} (DNF){% endif %}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td class="mono">
+                  {% if r.opening_ms is not none %}
+                    {{ fmt_ms(r.opening_ms) }}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td class="mono">
+                  {% if r.total_time_ms is none or r.dnf == 1 %}
+                    -
+                  {% elif r.is_pr %}
+                    <span class="badge-pr">PR</span>
+                  {% elif r.pr_gap_ms is not none %}
+                    {% if r.pr_gap_ms <= 0 %}
+                      <span class="delta-good">{{ fmt_ms(r.pr_gap_ms) }}</span>
+                    {% else %}
+                      <span class="delta-bad">+{{ fmt_ms(r.pr_gap_ms) }}</span>
+                    {% endif %}
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
+        <div class="row-actions" style="margin-top:12px;">
+          <a href="/competitions/{{ latest_comp_analysis.id }}" class="btn">Bekijk wedstrijd</a>
+        </div>
       {% endif %}
     </section>
   </div>
 
-  <div class="grid">
-    <section class="card">
-      <h2>Recente tijden</h2>
-      {% if recent_races|length == 0 %}
-        <p>Nog geen tijden. Voeg je eerste toe via <a href="/races/new">Nieuwe tijd</a>.</p>
-      {% else %}
-        <table>
-          <thead>
-            <tr><th>Afstand</th><th>Tijd</th><th>Datum</th></tr>
-          </thead>
-          <tbody>
-            {% for r in recent_races %}
-              <tr>
-                <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
-                <td class="mono">
-                  {{ fmt_ms(r.total_time_ms) }}{% if r.dnf == 1 %} (DNF){% endif %}
-                  {% if r.is_pr %}
-                    <span class="badge-pr">PR</span>
-                  {% endif %}
-                </td>
-                <td class="mono">{{ fmt_date(r.competition_date) }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% endif %}
-    </section>
-
-    <section class="card">
+  <section class="card">
       <details class="trend-filters-shell" {% if trend_filters_open %}open{% endif %}>
         <summary class="section-header trend-filters-summary">
           <h2>Ontwikkeling per afstand</h2>
-          <span class="btn-icon" aria-hidden="true">&#x1F5D0;</span>
+          <span class="btn-icon" aria-hidden="true"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/filter.svg');" aria-hidden="true"></span></span>
         </summary>
         {% if trend_error_message %}
           <div class="hint hint-warning" style="margin-bottom:10px;">{{ trend_error_message }}</div>
@@ -195,14 +213,14 @@
               <div class="date-input">
                 <input class="date-input-text" name="trend_date_from" value="{{ selected_trend_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
                 <input class="date-input-picker" type="date" value="{{ selected_trend_date_from }}" tabindex="-1" aria-hidden="true" />
-                <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
               </div>
             </label>
             <label>Datum t/m
               <div class="date-input">
                 <input class="date-input-text" name="trend_date_to" value="{{ selected_trend_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
                 <input class="date-input-picker" type="date" value="{{ selected_trend_date_to }}" tabindex="-1" aria-hidden="true" />
-                <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
               </div>
             </label>
           </div>
@@ -271,8 +289,7 @@
           {% endfor %}
         </div>
       {% endif %}
-    </section>
-  </div>
+  </section>
 
   <script>
     (function () {
@@ -419,3 +436,6 @@
     })();
   </script>
 {% endblock %}
+
+
+

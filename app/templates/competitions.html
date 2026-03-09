@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <div class="row">
     <h1>Wedstrijden</h1>
@@ -24,6 +24,7 @@
 
   <section class="card" id="competition-filters-panel" {% if not filters_open %}hidden{% endif %}>
     <form method="get" action="/competitions" class="form">
+      <input type="hidden" name="q" value="{{ selected_query }}" />
       <label>Locatie
         <select name="venue">
           <option value="">Alle locaties</option>
@@ -38,7 +39,7 @@
           <div class="date-input">
             <input class="date-input-text" name="date_from" value="{{ selected_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
             <input class="date-input-picker" type="date" value="{{ selected_date_from }}" tabindex="-1" aria-hidden="true" />
-            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
           </div>
         </label>
 
@@ -46,7 +47,7 @@
           <div class="date-input">
             <input class="date-input-text" name="date_to" value="{{ selected_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
             <input class="date-input-picker" type="date" value="{{ selected_date_to }}" tabindex="-1" aria-hidden="true" />
-            <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
           </div>
         </label>
       </div>
@@ -68,7 +69,7 @@
         </thead>
         <tbody>
           {% for c in comps %}
-            <tr>
+            <tr data-competition-href="/competitions/{{ c.id }}">
               <td class="mono">{{ fmt_date(c.competition_date) }}</td>
               <td><a href="/competitions/{{ c.id }}">{{ c.name }}</a></td>
               <td>{{ c.venue or "-" }}</td>
@@ -83,16 +84,28 @@
     (function () {
       const toggle = document.getElementById("competition-filters-toggle");
       const panel = document.getElementById("competition-filters-panel");
+      const rows = document.querySelectorAll("tbody tr[data-competition-href]");
 
-      if (!toggle || !panel) {
-        return;
+      if (toggle && panel) {
+        toggle.addEventListener("click", () => {
+          const open = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", open ? "false" : "true");
+          panel.hidden = open;
+        });
       }
 
-      toggle.addEventListener("click", () => {
-        const open = toggle.getAttribute("aria-expanded") === "true";
-        toggle.setAttribute("aria-expanded", open ? "false" : "true");
-        panel.hidden = open;
+      rows.forEach((row) => {
+        row.addEventListener("click", (event) => {
+          const link = event.target.closest("a");
+          if (link) {
+            return;
+          }
+          window.location.href = row.dataset.competitionHref;
+        });
       });
     })();
   </script>
 {% endblock %}
+
+
+

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <h1>Bewerk wedstrijdtijd</h1>
 
@@ -6,7 +6,7 @@
     <div class="muted">Rijder: <strong class="text-strong">{{ owner_name }}</strong></div>
     <div class="muted">
       Huidige wedstrijd:
-      <strong class="text-strong">{{ fmt_date(race.competition_date) }} — {{ race.competition_name }}</strong>
+      <strong class="text-strong">{{ fmt_date(race.competition_date) }} - {{ race.competition_name }}</strong>
     </div>
   </section>
 
@@ -19,7 +19,7 @@
         {% elif e == "date" %}
           Ongeldige datum. Gebruik de date picker.
         {% elif e == "laps" %}
-          Rondetijden niet goed gelezen. Gebruik komma’s en punt als decimaal (bv. 30.12, 31.00).
+          Rondetijden niet goed gelezen. Gebruik komma's en punt als decimaal (bv. 30.12, 31.00).
         {% else %}
           Er ging iets mis.
         {% endif %}
@@ -32,14 +32,14 @@
 
       <label>Bestaande wedstrijd (optioneel)
         <select name="competition_id">
-          <option value="">— Nieuwe wedstrijd aanmaken —</option>
+          <option value="">- Nieuwe wedstrijd aanmaken -</option>
           {% for c in comps %}
             <option value="{{ c.id }}" {% if c.id == race.competition_id %}selected{% endif %}>
-              {{ fmt_date(c.competition_date) }} — {{ c.name }}
+              {{ fmt_date(c.competition_date) }} - {{ c.name }}
             </option>
           {% endfor %}
         </select>
-        <span class="hint">Kies een bestaande wedstrijd óf maak hieronder een nieuwe aan.</span>
+        <span class="hint">Kies een bestaande wedstrijd of maak hieronder een nieuwe aan.</span>
       </label>
 
       <div class="grid2">
@@ -55,14 +55,14 @@
         <div class="date-input">
           <input class="date-input-text" name="new_competition_date" placeholder="dd/mm/jjjj" inputmode="numeric" />
           <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
-          <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+          <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
         </div>
-        <span class="hint">Alleen invullen als je hierboven géén bestaande wedstrijd kiest.</span>
+        <span class="hint">Alleen invullen als je hierboven geen bestaande wedstrijd kiest.</span>
       </label>
 
       <label>Afstand
         <select name="distance_m" required>
-          <option value="">— Kies afstand —</option>
+          <option value="">- Kies afstand -</option>
           {% for d in [100, 300, 500, 1000, 1500, 3000, 5000, 10000] %}
             <option value="{{ d }}" {% if race.distance_m == d %}selected{% endif %}>{{ d }}m</option>
           {% endfor %}
@@ -102,3 +102,6 @@
     </form>
   </section>
 {% endblock %}
+
+
+

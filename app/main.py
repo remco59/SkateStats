@@ -754,6 +754,8 @@ def build_sparkline(
     points = []
     circles = []
     month_ticks = []
+    min_tick_spacing_px = 28
+    last_tick_x: Optional[float] = None
     seen_months: set[tuple[int, int]] = set()
     for row in valid_rows:
         race_date = datetime.strptime(row["competition_date"], "%Y-%m-%d").date()
@@ -765,6 +767,9 @@ def build_sparkline(
         tick_offset = min(max((tick_date - start_date).days, 0), day_span)
         x_ratio = tick_offset / day_span
         x = left_padding + (x_ratio * plot_width)
+        if last_tick_x is not None and (x - last_tick_x) < min_tick_spacing_px:
+            continue
+        last_tick_x = x
         month_ticks.append({"x": f"{x:.1f}", "label": month_labels[race_date.month]})
 
     for row in valid_rows:
@@ -2129,6 +2134,8 @@ def home(
         "season": "",
         "pid": "",
     }
+    latest_comp = None
+    latest_comp_races: list[sqlite3.Row] = []
     with db() as conn:
         competition_count = conn.execute(
             "SELECT COUNT(*) AS count FROM competition WHERE owner_user_id = ?",
@@ -2144,21 +2151,9 @@ def home(
             """,
             (int(current_user["id"]),),
         ).fetchall()
-        recent_races = conn.execute(
-            """
-            SELECT r.id, r.distance_m, r.total_time_ms, r.dnf,
-                   c.name AS competition_name, c.competition_date
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE r.skater_id = ? AND c.owner_user_id = ?
-            ORDER BY c.competition_date DESC, r.id DESC
-            LIMIT 20
-            """,
-            (int(current_user["skater_id"]), int(current_user["id"])),
-        ).fetchall()
         all_races = conn.execute(
             """
-            SELECT r.id, r.distance_m, r.total_time_ms, r.dnf, r.lane,
+            SELECT r.id, r.competition_id, r.distance_m, r.total_time_ms, r.dnf, r.lane,
                    c.name AS competition_name, c.competition_date, c.venue
             FROM race r
             JOIN competition c ON c.id = r.competition_id
@@ -2167,6 +2162,29 @@ def home(
             """,
             (int(current_user["skater_id"]), int(current_user["id"])),
         ).fetchall()
+        latest_comp = conn.execute(
+            """
+            SELECT c.id, c.name, c.venue, c.competition_date, COUNT(r.id) AS race_count
+            FROM competition c
+            JOIN race r ON r.competition_id = c.id
+            WHERE c.owner_user_id = ? AND r.skater_id = ?
+            GROUP BY c.id, c.name, c.venue, c.competition_date
+            ORDER BY c.competition_date DESC, c.id DESC
+            LIMIT 1
+            """,
+            (int(current_user["id"]), int(current_user["skater_id"])),
+        ).fetchone()
+        if latest_comp:
+            latest_comp_races = conn.execute(
+                """
+                SELECT r.id, r.distance_m, r.total_time_ms, r.laps_csv, r.dnf
+                FROM race r
+                JOIN competition c ON c.id = r.competition_id
+                WHERE r.competition_id = ? AND c.owner_user_id = ? AND r.skater_id = ?
+                ORDER BY r.distance_m ASC, r.id ASC
+                """,
+                (int(latest_comp["id"]), int(current_user["id"]), int(current_user["skater_id"])),
+            ).fetchall()
         osta_detection = detect_osta_updates_for_user(conn, current_user)
 
     best_times: dict[int, dict] = {}
@@ -2199,6 +2217,34 @@ def home(
     selected_trend_date_to = trend_date_to.strip()
     trend_error_message = ""
     pr_race_ids = collect_pr_race_ids(all_races)
+    latest_comp_analysis = None
+    if latest_comp:
+        latest_race_rows: list[dict] = []
+        for row in latest_comp_races:
+            race_id = int(row["id"])
+            pr_ctx = pr_progress.get(
+                race_id,
+                {"is_pr": False, "previous_pr_ms": None},
+            )
+            previous_pr_ms = pr_ctx.get("previous_pr_ms")
+            total_time_ms = row["total_time_ms"]
+            pr_gap_ms = None
+            if total_time_ms is not None and row["dnf"] != 1 and previous_pr_ms is not None:
+                pr_gap_ms = int(total_time_ms) - int(previous_pr_ms)
+            laps = laps_from_csv(row["laps_csv"])
+            opening_ms = int(round(laps[0] * 1000)) if laps else None
+            latest_race_rows.append(
+                {
+                    **dict(row),
+                    "is_pr": bool(pr_ctx.get("is_pr")),
+                    "pr_gap_ms": pr_gap_ms,
+                    "opening_ms": opening_ms,
+                }
+            )
+        latest_comp_analysis = {
+            **dict(latest_comp),
+            "races": latest_race_rows,
+        }
 
     today = datetime.now().date()
     filter_start = None
@@ -2236,6 +2282,13 @@ def home(
             }
         )
 
+    recent_pr_cutoff = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    best_times_rows: list[dict] = []
+    for distance in sorted(best_times):
+        row = dict(best_times[distance])
+        row["is_recent_pr"] = (row.get("competition_date") or "") >= recent_pr_cutoff
+        best_times_rows.append(row)
+
     return render(
         request,
         "index.html",
@@ -2248,7 +2301,7 @@ def home(
         pr_count=len(pr_race_ids),
         favorite_venue=favorite_venue,
         favorite_distance=favorite_distance,
-        best_times=[best_times[d] for d in sorted(best_times)],
+        best_times=best_times_rows,
         trend_rows=trend_rows,
         selected_trend_period=selected_trend_period,
         selected_trend_date_from=selected_trend_date_from,
@@ -2265,7 +2318,7 @@ def home(
             else "Vrij bereik"
         ),
         trend_error_message=trend_error_message,
-        recent_races=[{**dict(row), **pr_progress.get(int(row["id"]), {})} for row in recent_races],
+        latest_comp_analysis=latest_comp_analysis,
         fmt_ms=fmt_ms,
         fmt_date=fmt_date_ymd_to_dmy,
     )
@@ -2663,6 +2716,7 @@ def goals_delete(request: Request, distance_m: int):
 @app.get("/competitions", response_class=HTMLResponse)
 def competitions(
     request: Request,
+    q: str = "",
     venue: str = "",
     date_from: str = "",
     date_to: str = "",
@@ -2671,9 +2725,15 @@ def competitions(
     filters = ["owner_user_id = ?"]
     params: list[object] = [int(current_user["id"])]
 
+    selected_query = q.strip()
     selected_venue = venue.strip()
     selected_date_from = date_from.strip()
     selected_date_to = date_to.strip()
+
+    if selected_query:
+        filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
+        query_like = f"%{selected_query.lower()}%"
+        params.extend([query_like, query_like])
 
     if selected_venue:
         filters.append("LOWER(COALESCE(venue, '')) = ?")
@@ -2691,6 +2751,10 @@ def competitions(
         error_message = "Ongeldige datumfilter."
         filters = ["owner_user_id = ?"]
         params = [int(current_user["id"])]
+        if selected_query:
+            filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
+            query_like = f"%{selected_query.lower()}%"
+            params.extend([query_like, query_like])
         if selected_venue:
             filters.append("LOWER(COALESCE(venue, '')) = ?")
             params.append(selected_venue.lower())
@@ -2721,6 +2785,7 @@ def competitions(
         "competitions.html",
         comps=comps,
         venue_options=venue_options,
+        selected_query=selected_query,
         selected_venue=selected_venue,
         selected_date_from=selected_date_from,
         selected_date_to=selected_date_to,
@@ -3213,10 +3278,7 @@ def race_compare(request: Request, race_id: int, compare_race_id: str = ""):
         except ValueError:
             compare_race = None
 
-    if compare_race is None and comparison_candidates:
-        compare_race = comparison_candidates[0]
-        selected_compare_id = str(compare_race["id"])
-    elif compare_race is None:
+    if compare_race is None:
         selected_compare_id = ""
 
     comparison = build_comparison_context(base_race, compare_race)
@@ -3231,6 +3293,7 @@ def race_compare(request: Request, race_id: int, compare_race_id: str = ""):
         compare_race=compare_race,
         comparison_candidates=comparison_candidates,
         selected_compare_id=selected_compare_id,
+        auto_open_compare_modal=bool(comparison_candidates) and compare_race is None,
         comparison=comparison,
         swap_href=swap_href,
         fmt_ms=fmt_ms,

@@ -1,9 +1,9 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <div class="row">
     <div>
       <h1>{{ comp.name }}</h1>
-      <p class="muted">{{ fmt_date(comp.competition_date) }}{% if comp.venue %} • {{ comp.venue }}{% endif %}</p>
+      <p class="muted">{{ fmt_date(comp.competition_date) }}{% if comp.venue %} &bull; {{ comp.venue }}{% endif %}</p>
       {% if comp.notes %}<p class="notes-block">{{ format_notes_html(comp.notes) }}</p>{% endif %}
     </div>
     <div class="row-actions">
@@ -23,7 +23,7 @@
       <table>
         <thead>
           <tr>
-            <th>Afstand</th><th>Tijd</th><th>Rondes</th><th>Gem.</th><th>Verval</th>
+            <th>Afstand</th><th>Tijd</th><th>Baan</th><th>Gem.</th><th>Verval</th>
           </tr>
         </thead>
         <tbody>
@@ -31,7 +31,21 @@
             <tr>
               <td class="mono">{{ r.distance_m }}m</td>
               <td class="mono"><a href="/races/{{ r.id }}">{{ fmt_ms(r.total_time_ms) }}</a>{% if r.dnf == 1 %} (DNF){% endif %}</td>
-              <td class="mono">{{ m.segment_count }}</td>
+              <td>
+                {% set lane_value = r.lane or "" %}
+                {% set lane_norm = lane_value|lower %}
+                {% if lane_value %}
+                  {% if "binnen" in lane_norm %}
+                    <span class="lane-dot lane-dot-indoor" aria-label="Binnenbaan" title="Binnenbaan"></span>
+                  {% elif "buiten" in lane_norm %}
+                    <span class="lane-dot lane-dot-outdoor" aria-label="Buitenbaan" title="Buitenbaan"></span>
+                  {% else %}
+                    <span class="lane-dot lane-dot-unknown" aria-label="{{ r.lane }}" title="{{ r.lane }}"></span>
+                  {% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
               <td class="mono">{% if m.avg_400 is not none %}{{ "%.2f"|format(m.avg_400) }}{% else %}-{% endif %}</td>
               <td class="mono">{% if m.fade_400eq is not none %}{{ "%.2f"|format(m.fade_400eq) }}{% else %}-{% endif %}</td>
             </tr>
@@ -41,3 +55,4 @@
     {% endif %}
   </section>
 {% endblock %}
+

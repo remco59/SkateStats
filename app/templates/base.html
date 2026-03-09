@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="nl" data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
   <head>
     <meta charset="utf-8" />
@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light" />
     <title>{{ app_title }}</title>
     <link rel="stylesheet" href="/static/style.css" />
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+        <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="alternate icon" href="/static/favicon.svg">
   </head>
   <body data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
@@ -14,12 +14,22 @@
       <div class="brand">
         <a href="/">{{ app_title }}</a>
         {% if current_user %}
-          <span class="tag">{{ current_user.username }} · {{ owner_name }}</span>
+          <span class="tag">{{ current_user.username }} &middot; {{ owner_name }}</span>
         {% else %}
           <span class="tag">login required</span>
         {% endif %}
       </div>
       {% if current_user %}
+        <form method="get" action="/competitions" class="nav-search nav-search-desktop" role="search">
+          <input
+            type="search"
+            name="q"
+            value="{{ selected_query or '' }}"
+            placeholder="Zoek wedstrijd of locatie"
+            aria-label="Zoek op wedstrijd of locatie"
+          />
+          <span class="nav-search-icon line-md-icon" style="--icon-url:url('/static/icons/line-md/search.svg');" aria-hidden="true"></span>
+        </form>
         <nav class="nav-desktop">
           <a href="/stats">Statistieken</a>
           <!--<a href="/goals">Doelen</a>-->
@@ -34,15 +44,23 @@
           </form>
         </nav>
         <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
-          <span></span>
-          <span></span>
-          <span></span>
+          <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/menu.svg');" aria-hidden="true"></span>
         </button>
       {% endif %}
     </header>
 
     {% if current_user %}
       <nav id="mobile-nav" class="nav-mobile" hidden>
+        <form method="get" action="/competitions" class="nav-search nav-search-mobile" role="search">
+          <input
+            type="search"
+            name="q"
+            value="{{ selected_query or '' }}"
+            placeholder="Zoek wedstrijd of locatie"
+            aria-label="Zoek op wedstrijd of locatie"
+          />
+          <span class="nav-search-icon line-md-icon" style="--icon-url:url('/static/icons/line-md/search.svg');" aria-hidden="true"></span>
+        </form>
         <a href="/stats">Statistieken</a>
         <!--<a href="/goals">Doelen</a>-->
         <a href="/competitions">Wedstrijden</a>
@@ -68,12 +86,14 @@
           <a class="fab-action" href="/competitions/new">Wedstrijd toevoegen</a>
           <a class="fab-action" href="/races/new">Rit toevoegen</a>
         </div>
-        <button type="button" class="fab-toggle" aria-label="Snelle acties" aria-expanded="false">+</button>
+        <button type="button" class="fab-toggle" aria-label="Snelle acties" aria-expanded="false">
+          <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/plus.svg');" aria-hidden="true"></span>
+        </button>
       </div>
     {% endif %}
 
     <footer class="footer">
-      <span>SkateStats • Copyright 2026 • Gemaakt met ❤️ door Remco Land</span>
+      <span>SkateStats &bull; Copyright 2026 &bull; Gemaakt met <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/heart.svg');" aria-hidden="true"></span> door Remco Land</span>
     </footer>
 
     <script>
@@ -248,9 +268,17 @@
         window.addEventListener("resize", syncTopbarHeight);
 
         if (navToggle && mobileNav) {
+          const navToggleIcon = navToggle.querySelector(".line-md-icon");
+
           function syncMobileNav(open) {
             navToggle.setAttribute("aria-expanded", open ? "true" : "false");
             navToggle.classList.toggle("is-open", open);
+            if (navToggleIcon) {
+              const iconUrl = open
+                ? "url('/static/icons/line-md/close.svg')"
+                : "url('/static/icons/line-md/menu.svg')";
+              navToggleIcon.style.setProperty("--icon-url", iconUrl);
+            }
             if (open) {
               mobileNav.hidden = false;
               mobileNav.removeAttribute("hidden");
@@ -298,3 +326,5 @@
     </script>
   </body>
 </html>
+
+

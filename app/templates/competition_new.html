@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+﻿{% extends "base.html" %}
 {% block content %}
   <h1>Nieuwe wedstrijd</h1>
 
@@ -26,7 +26,7 @@
         <div class="date-input">
           <input class="date-input-text" name="competition_date" placeholder="dd/mm/jjjj" inputmode="numeric" required />
           <input class="date-input-picker" type="date" tabindex="-1" aria-hidden="true" />
-          <button class="date-input-trigger" type="button" aria-label="Open kalender">📅</button>
+          <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
         </div>
         <span class="hint">Gebruik formaat dd/mm/jjjj.</span>
       </label>
@@ -40,3 +40,6 @@
     </form>
   </section>
 {% endblock %}
+
+
+
