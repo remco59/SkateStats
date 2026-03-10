@@ -1,0 +1,74 @@
+<section class="card" id="home-trends-section">
+  <h2>Ontwikkeling per afstand</h2>
+  <form method="get" action="/" class="form trend-filter-form trend-filter-form-inline" id="trend-filters-panel">
+    <label>Seizoen
+      <select name="trend_season">
+        <option value="">Alle seizoenen</option>
+        {% for season_label in trend_season_options %}
+          <option value="{{ season_label }}" {% if selected_trend_season == season_label %}selected{% endif %}>{{ season_label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <noscript>
+      <button type="submit">Toepassen</button>
+    </noscript>
+  </form>
+  {% if trend_rows|length == 0 %}
+    <p>Nog onvoldoende data voor grafieken.</p>
+  {% else %}
+    <div class="trend-list">
+      {% for trend in trend_rows %}
+        <div class="trend-item">
+          <div class="row">
+            <strong class="mono">{{ trend.distance_m }}m</strong>
+          </div>
+          {% if trend.sparkline %}
+            <div class="sparkline-wrap">
+              <svg class="sparkline js-sparkline" viewBox="0 0 {{ trend.sparkline.width }} {{ trend.sparkline.height }}" preserveAspectRatio="xMidYMid meet" data-distance="{{ trend.distance_m }}m">
+                <line
+                  x1="{{ trend.sparkline.left_padding }}"
+                  y1="{{ trend.sparkline.baseline_y }}"
+                  x2="{{ trend.sparkline.width - trend.sparkline.right_padding }}"
+                  y2="{{ trend.sparkline.baseline_y }}"
+                  class="sparkline-axis"
+                ></line>
+                {% for tick in trend.sparkline.month_ticks %}
+                  <line
+                    x1="{{ tick.x }}"
+                    y1="{{ trend.sparkline.baseline_y }}"
+                    x2="{{ tick.x }}"
+                    y2="{{ trend.sparkline.baseline_y + 5 }}"
+                    class="sparkline-axis"
+                  ></line>
+                  <text x="{{ tick.x }}" y="{{ trend.sparkline.baseline_y + 16 }}" class="sparkline-label">{{ tick.label }}</text>
+                {% endfor %}
+                <polyline points="{{ trend.sparkline.points }}" class="sparkline-line" pathLength="100" />
+                {% for point in trend.sparkline.circles %}
+                  <circle
+                    cx="{{ point.x }}"
+                    cy="{{ point.y }}"
+                    r="4.5"
+                    data-date="{{ point.tooltip_date }}"
+                    data-name="{{ point.tooltip_name }}"
+                    data-time="{{ point.tooltip_time }}"
+                    data-distance="{{ trend.distance_m }}m"
+                    data-href="{{ point.href }}"
+                  ></circle>
+                {% endfor %}
+              </svg>
+              <div class="chart-tooltip" hidden>
+                <div class="chart-tooltip-distance"></div>
+                <div class="chart-tooltip-time"></div>
+                <div class="chart-tooltip-name"></div>
+                <div class="chart-tooltip-date"></div>
+                <a class="chart-tooltip-link" href="#">Open rit</a>
+              </div>
+            </div>
+          {% else %}
+            <p class="sparkline-empty">Nog geen grafiek beschikbaar. Enige tijd: <strong>{{ trend.latest_time }}</strong> op {{ trend.latest_date }}.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>

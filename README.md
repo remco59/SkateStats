@@ -6,7 +6,7 @@ SkateStats is a self-hosted web app for tracking and analyzing long-track speed 
 
 - Stores competitions and races in a local SQLite database.
 - Tracks split times, total times, pace/fade, and distance-specific history.
-- Lets each user define goals per distance and compare results against those targets.
+- Lets each user define targets per distance and compare results against those targets.
 - Supports race and competition management in the UI (create, edit, delete).
 - Imports results from:
   - SpeedSkatingResults (SSR)
@@ -82,7 +82,7 @@ Then log in with:
 
 - Open `Account settings` and verify username/skater profile.
 - Add your first competition and race manually, or use `Import`.
-- Configure goals per distance in `Goals`.
+- Configure targets per distance in `Targets`.
 
 ## Useful admin CLI commands
 

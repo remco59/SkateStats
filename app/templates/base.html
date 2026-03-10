@@ -1,5 +1,5 @@
 ﻿<!doctype html>
-<html lang="nl" data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
+<html lang="nl" data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}" data-motion-preference="{{ motion_preference }}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -9,7 +9,7 @@
         <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="alternate icon" href="/static/favicon.svg">
   </head>
-  <body data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}">
+  <body data-theme="{{ active_theme }}" data-theme-preference="{{ theme_preference }}" data-motion-preference="{{ motion_preference }}">
     <header class="topbar">
       <div class="brand">
         <a href="/">{{ app_title }}</a>
@@ -32,24 +32,43 @@
         </form>
         <nav class="nav-desktop">
           <a href="/stats">Statistieken</a>
-          <!--<a href="/goals">Doelen</a>-->
+          <a href="/targets">Targets</a>
           <a href="/competitions">Wedstrijden</a>
           <a href="/races">Ritten</a>
-          <a href="/account/settings">Instellingen</a>
-          {% if current_user.is_admin == 1 %}
-            <a href="/admin/users">Admin paneel</a>
-          {% endif %}
-          <form method="post" action="/logout" class="inline-form">
-            <button type="submit" class="btn-secondary">Uitloggen</button>
-          </form>
+          <div class="profile-menu">
+            <button
+              type="button"
+              class="btn-secondary profile-menu-toggle"
+              aria-label="Profielmenu openen"
+              aria-expanded="false"
+              aria-controls="profile-menu-dropdown"
+            >
+              {{ owner_name }}
+            </button>
+            <div id="profile-menu-dropdown" class="profile-menu-dropdown" hidden>
+              <a href="/account/settings">Instellingen</a>
+              {% if current_user.is_admin == 1 %}
+                <a href="/admin/users">Admin paneel</a>
+              {% endif %}
+              <form method="post" action="/logout" class="inline-form">
+                <button type="submit" class="btn btn-danger profile-menu-action">Uitloggen</button>
+              </form>
+            </div>
+          </div>
         </nav>
-        <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
-          <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/menu.svg');" aria-hidden="true"></span>
-        </button>
+        <div class="nav-mobile-toggles">
+          <button type="button" class="profile-toggle" aria-label="Profielmenu openen" aria-expanded="false" aria-controls="mobile-profile-nav">
+            <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/account.svg');" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="nav-toggle" aria-label="Menu openen" aria-expanded="false" aria-controls="mobile-nav">
+            <span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/menu.svg');" aria-hidden="true"></span>
+          </button>
+        </div>
       {% endif %}
     </header>
 
     {% if current_user %}
+      <div class="mobile-menu-backdrop" hidden></div>
       <nav id="mobile-nav" class="nav-mobile" hidden>
         <form method="get" action="/competitions" class="nav-search nav-search-mobile" role="search">
           <input
@@ -62,9 +81,11 @@
           <span class="nav-search-icon line-md-icon" style="--icon-url:url('/static/icons/line-md/search.svg');" aria-hidden="true"></span>
         </form>
         <a href="/stats">Statistieken</a>
-        <!--<a href="/goals">Doelen</a>-->
+        <a href="/targets">Targets</a>
         <a href="/competitions">Wedstrijden</a>
         <a href="/races">Ritten</a>
+      </nav>
+      <nav id="mobile-profile-nav" class="nav-mobile nav-mobile-profile" hidden>
         <a href="/account/settings">Instellingen</a>
         {% if current_user.is_admin == 1 %}
           <a href="/admin/users">Admin paneel</a>
@@ -80,6 +101,7 @@
     </main>
 
     {% if current_user %}
+      <div class="fab-backdrop" hidden></div>
       <div class="fab-menu" data-open="false">
         <div class="fab-actions">
           <a class="fab-action" href="/import">Importeren</a>
@@ -124,7 +146,29 @@
           }
         }
 
+        function applyMotion(preference) {
+          const nextPreference = ["background", "cards", "none"].includes(preference) ? preference : "all";
+          root.dataset.motionPreference = nextPreference;
+          if (!body) {
+            return;
+          }
+          body.dataset.motionPreference = nextPreference;
+          body.classList.remove("motion-ready", "motion-background-ready", "motion-cards-ready");
+
+          if (prefersReducedMotion) {
+            return;
+          }
+
+          if (nextPreference === "all" || nextPreference === "background") {
+            body.classList.add("motion-background-ready");
+          }
+          if (nextPreference === "all" || nextPreference === "cards") {
+            body.classList.add("motion-ready", "motion-cards-ready");
+          }
+        }
+
         applyTheme(root.dataset.themePreference || "dark");
+        applyMotion(root.dataset.motionPreference || "all");
         if (typeof media.addEventListener === "function") {
           media.addEventListener("change", () => {
             if ((root.dataset.themePreference || "dark") === "system") {
@@ -140,7 +184,7 @@
             "main .stat",
             "main .trend-item",
             "main .admin-user-item",
-            "main .goal-card",
+            "main .target-card",
             "main .split-chart-wrap"
           ].join(", ");
           const revealItems = Array.from(document.querySelectorAll(revealSelector));
@@ -160,102 +204,118 @@
             element.classList.add("is-inview");
           };
 
-          window.requestAnimationFrame(() => {
-            body.classList.add("motion-ready");
+          if ("IntersectionObserver" in window) {
+            const observer = new IntersectionObserver((entries, obs) => {
+              entries.forEach((entry) => {
+                if (!entry.isIntersecting) {
+                  return;
+                }
+                revealElement(entry.target);
+                obs.unobserve(entry.target);
+              });
+            }, {
+              root: null,
+              threshold: 0.18,
+              rootMargin: "0px 0px -8% 0px"
+            });
 
-            if ("IntersectionObserver" in window) {
-              const observer = new IntersectionObserver((entries, obs) => {
-                entries.forEach((entry) => {
-                  if (!entry.isIntersecting) {
-                    return;
-                  }
-                  revealElement(entry.target);
-                  obs.unobserve(entry.target);
-                });
-              }, {
-                root: null,
-                threshold: 0.18,
-                rootMargin: "0px 0px -8% 0px"
-              });
-
-              revealItems.forEach((element) => {
-                observer.observe(element);
-              });
-            } else {
-              revealItems.forEach((element) => {
-                revealElement(element);
-              });
-            }
-          });
+            revealItems.forEach((element) => {
+              observer.observe(element);
+            });
+          } else {
+            revealItems.forEach((element) => {
+              revealElement(element);
+            });
+          }
         }
 
-        document.querySelectorAll(".date-input").forEach((wrapper) => {
-          const textInput = wrapper.querySelector(".date-input-text");
-          const pickerInput = wrapper.querySelector(".date-input-picker");
-          const trigger = wrapper.querySelector(".date-input-trigger");
+        window.applySkateStatsMotion = applyMotion;
 
-          if (!textInput || !pickerInput || !trigger) {
-            return;
-          }
+        window.initDateInputs = function (rootNode) {
+          const scope = rootNode || document;
+          scope.querySelectorAll(".date-input").forEach((wrapper) => {
+            if (wrapper.dataset.dateInputBound === "true") {
+              return;
+            }
+            wrapper.dataset.dateInputBound = "true";
 
-          function isoToDisplay(value) {
-            if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-              return value || "";
-            }
-            const [year, month, day] = value.split("-");
-            return `${day}/${month}/${year}`;
-          }
+            const textInput = wrapper.querySelector(".date-input-text");
+            const pickerInput = wrapper.querySelector(".date-input-picker");
+            const trigger = wrapper.querySelector(".date-input-trigger");
 
-          function displayToIso(value) {
-            const raw = (value || "").trim();
-            if (!raw) {
-              return "";
+            if (!textInput || !pickerInput || !trigger) {
+              return;
             }
-            if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-              return raw;
-            }
-            const match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-            if (!match) {
-              return "";
-            }
-            const day = match[1].padStart(2, "0");
-            const month = match[2].padStart(2, "0");
-            const year = match[3];
-            return `${year}-${month}-${day}`;
-          }
 
-          if (!textInput.value && pickerInput.value) {
-            textInput.value = isoToDisplay(pickerInput.value);
-          }
-
-          trigger.addEventListener("click", () => {
-            if (typeof pickerInput.showPicker === "function") {
-              pickerInput.showPicker();
-            } else {
-              pickerInput.focus();
-              pickerInput.click();
+            function isoToDisplay(value) {
+              if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                return value || "";
+              }
+              const [year, month, day] = value.split("-");
+              return `${day}/${month}/${year}`;
             }
+
+            function displayToIso(value) {
+              const raw = (value || "").trim();
+              if (!raw) {
+                return "";
+              }
+              if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+                return raw;
+              }
+              const match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+              if (!match) {
+                return "";
+              }
+              const day = match[1].padStart(2, "0");
+              const month = match[2].padStart(2, "0");
+              const year = match[3];
+              return `${year}-${month}-${day}`;
+            }
+
+            if (!textInput.value && pickerInput.value) {
+              textInput.value = isoToDisplay(pickerInput.value);
+            }
+
+            trigger.addEventListener("click", () => {
+              if (typeof pickerInput.showPicker === "function") {
+                pickerInput.showPicker();
+              } else {
+                pickerInput.focus();
+                pickerInput.click();
+              }
+            });
+
+            pickerInput.addEventListener("change", () => {
+              textInput.value = isoToDisplay(pickerInput.value);
+            });
+
+            textInput.addEventListener("blur", () => {
+              const isoValue = displayToIso(textInput.value);
+              if (isoValue) {
+                pickerInput.value = isoValue;
+                textInput.value = isoToDisplay(isoValue);
+              }
+            });
           });
-
-          pickerInput.addEventListener("change", () => {
-            textInput.value = isoToDisplay(pickerInput.value);
-          });
-
-          textInput.addEventListener("blur", () => {
-            const isoValue = displayToIso(textInput.value);
-            if (isoValue) {
-              pickerInput.value = isoValue;
-              textInput.value = isoToDisplay(isoValue);
-            }
-          });
-        });
+        };
+        window.initDateInputs(document);
 
         const navToggle = document.querySelector(".nav-toggle");
+        const profileToggle = document.querySelector(".profile-toggle");
         const mobileNav = document.getElementById("mobile-nav");
+        const mobileProfileNav = document.getElementById("mobile-profile-nav");
+        const profileMenu = document.querySelector(".profile-menu");
+        const profileMenuToggle = profileMenu ? profileMenu.querySelector(".profile-menu-toggle") : null;
+        const profileMenuDropdown = document.getElementById("profile-menu-dropdown");
         const topbar = document.querySelector(".topbar");
+        const mobileMenuBackdrop = document.querySelector(".mobile-menu-backdrop");
+        const fabBackdrop = document.querySelector(".fab-backdrop");
         const fabMenu = document.querySelector(".fab-menu");
         const fabToggle = document.querySelector(".fab-toggle");
         const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+        let syncMobileNav = () => {};
+        let syncMobileProfileNav = () => {};
 
         function syncTopbarHeight() {
           if (!topbar) {
@@ -267,10 +327,67 @@
         syncTopbarHeight();
         window.addEventListener("resize", syncTopbarHeight);
 
+        function bindMenuCloseOnLinks(container, onClose) {
+          if (!container) {
+            return;
+          }
+          container.querySelectorAll("a").forEach((link) => {
+            link.addEventListener("click", onClose);
+          });
+        }
+
+        function syncMobileMenuBackdrop() {
+          if (!mobileMenuBackdrop) {
+            return;
+          }
+          const navOpen = navToggle && navToggle.getAttribute("aria-expanded") === "true";
+          const profileOpen = profileToggle && profileToggle.getAttribute("aria-expanded") === "true";
+          const open = Boolean(navOpen || profileOpen);
+          if (open) {
+            mobileMenuBackdrop.hidden = false;
+            mobileMenuBackdrop.removeAttribute("hidden");
+          } else {
+            mobileMenuBackdrop.hidden = true;
+            mobileMenuBackdrop.setAttribute("hidden", "");
+          }
+        }
+
+        function syncDesktopProfileMenu(open) {
+          if (!profileMenuToggle || !profileMenuDropdown) {
+            return;
+          }
+          profileMenuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          profileMenu.classList.toggle("is-open", open);
+          if (open) {
+            profileMenuDropdown.hidden = false;
+            profileMenuDropdown.removeAttribute("hidden");
+          } else {
+            profileMenuDropdown.hidden = true;
+            profileMenuDropdown.setAttribute("hidden", "");
+          }
+        }
+
+        if (profileMenuToggle && profileMenuDropdown) {
+          profileMenuToggle.addEventListener("click", () => {
+            const open = profileMenuToggle.getAttribute("aria-expanded") === "true";
+            syncDesktopProfileMenu(!open);
+          });
+
+          bindMenuCloseOnLinks(profileMenuDropdown, () => syncDesktopProfileMenu(false));
+
+          document.addEventListener("click", (event) => {
+            if (!profileMenu.contains(event.target)) {
+              syncDesktopProfileMenu(false);
+            }
+          });
+
+          syncDesktopProfileMenu(false);
+        }
+
         if (navToggle && mobileNav) {
           const navToggleIcon = navToggle.querySelector(".line-md-icon");
 
-          function syncMobileNav(open) {
+          syncMobileNav = function (open) {
             navToggle.setAttribute("aria-expanded", open ? "true" : "false");
             navToggle.classList.toggle("is-open", open);
             if (navToggleIcon) {
@@ -280,6 +397,9 @@
               navToggleIcon.style.setProperty("--icon-url", iconUrl);
             }
             if (open) {
+              if (profileToggle && mobileProfileNav) {
+                syncMobileProfileNav(false);
+              }
               mobileNav.hidden = false;
               mobileNav.removeAttribute("hidden");
               mobileNav.classList.add("is-open");
@@ -288,18 +408,53 @@
               mobileNav.setAttribute("hidden", "");
               mobileNav.classList.remove("is-open");
             }
-          }
+            syncMobileMenuBackdrop();
+          };
 
           navToggle.addEventListener("click", () => {
             const open = navToggle.getAttribute("aria-expanded") === "true";
             syncMobileNav(!open);
           });
 
-          mobileNav.querySelectorAll("a").forEach((link) => {
-            link.addEventListener("click", () => syncMobileNav(false));
-          });
+          bindMenuCloseOnLinks(mobileNav, () => syncMobileNav(false));
 
           syncMobileNav(false);
+        }
+
+        if (profileToggle && mobileProfileNav) {
+          syncMobileProfileNav = function (open) {
+            profileToggle.setAttribute("aria-expanded", open ? "true" : "false");
+            profileToggle.classList.toggle("is-open", open);
+            if (open) {
+              if (navToggle && mobileNav) {
+                syncMobileNav(false);
+              }
+              mobileProfileNav.hidden = false;
+              mobileProfileNav.removeAttribute("hidden");
+              mobileProfileNav.classList.add("is-open");
+            } else {
+              mobileProfileNav.hidden = true;
+              mobileProfileNav.setAttribute("hidden", "");
+              mobileProfileNav.classList.remove("is-open");
+            }
+            syncMobileMenuBackdrop();
+          };
+
+          profileToggle.addEventListener("click", () => {
+            const open = profileToggle.getAttribute("aria-expanded") === "true";
+            syncMobileProfileNav(!open);
+          });
+
+          bindMenuCloseOnLinks(mobileProfileNav, () => syncMobileProfileNav(false));
+
+          syncMobileProfileNav(false);
+        }
+
+        if (mobileMenuBackdrop) {
+          mobileMenuBackdrop.addEventListener("click", () => {
+            syncMobileNav(false);
+            syncMobileProfileNav(false);
+          });
         }
 
         if (!fabMenu || !fabToggle) {
@@ -309,11 +464,52 @@
         function syncFab(open) {
           fabMenu.dataset.open = open ? "true" : "false";
           fabToggle.setAttribute("aria-expanded", open ? "true" : "false");
+          if (fabBackdrop) {
+            if (open) {
+              fabBackdrop.hidden = false;
+              fabBackdrop.removeAttribute("hidden");
+            } else {
+              fabBackdrop.hidden = true;
+              fabBackdrop.setAttribute("hidden", "");
+            }
+          }
         }
 
         fabToggle.addEventListener("click", () => {
           const open = fabMenu.dataset.open === "true";
           syncFab(!open);
+        });
+
+        fabMenu.querySelectorAll(".fab-action").forEach((action) => {
+          action.addEventListener("click", () => syncFab(false));
+        });
+
+        if (fabBackdrop) {
+          fabBackdrop.addEventListener("click", () => syncFab(false));
+        }
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") {
+            return;
+          }
+          if (fabMenu.dataset.open === "true") {
+            syncFab(false);
+          }
+          if (navToggle && navToggle.getAttribute("aria-expanded") === "true") {
+            syncMobileNav(false);
+          }
+          if (profileToggle && profileToggle.getAttribute("aria-expanded") === "true") {
+            syncMobileProfileNav(false);
+          }
+        });
+
+        document.addEventListener("click", (event) => {
+          if (fabMenu.dataset.open !== "true") {
+            return;
+          }
+          if (!fabMenu.contains(event.target)) {
+            syncFab(false);
+          }
         });
 
         if (canHover) {

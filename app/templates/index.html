@@ -2,24 +2,6 @@
 {% block content %}
   <h1>Overzicht</h1>
 
-  {% if osta_notice == "ignored" %}
-    <section class="card">
-      <div class="message message-success">OSTA-competitie genegeerd. Deze melding wordt niet meer getoond.</div>
-    </section>
-  {% elif osta_notice == "imported" %}
-    <section class="card">
-      <div class="message message-success">Nieuwe OSTA-data geimporteerd: {{ osta_notice_count }} ritten toegevoegd.</div>
-    </section>
-  {% elif osta_notice == "nonew" %}
-    <section class="card">
-      <div class="message message-warning">Er is op dit moment geen nieuwe OSTA-data om te importeren.</div>
-    </section>
-  {% elif osta_notice in ["ignore_error", "import_error"] %}
-    <section class="card">
-      <div class="message message-warning">Actie mislukt. Probeer het opnieuw via de importpagina.</div>
-    </section>
-  {% endif %}
-
   {% if competition_count == 0 and race_count == 0 %}
     <section class="card">
       <div class="message message-warning">
@@ -30,48 +12,7 @@
     </section>
   {% endif %}
 
-  {% if osta_detection.error_message %}
-    <section class="card">
-      <div class="message message-warning">{{ osta_detection.error_message }}</div>
-    </section>
-  {% endif %}
-
-  {% if osta_detection.available|length > 0 %}
-    <section class="card card-warning-subtle">
-      <h2>Nieuwe OSTA-data beschikbaar</h2>
-      <p class="muted">Voor {{ osta_detection.search_name }} (seizoen {{ osta_detection.season }}) zijn {{ osta_detection.available|length }} nieuwe competities gevonden.</p>
-      <table>
-        <thead>
-          <tr><th>Wedstrijd</th><th>Datum</th><th>Ritten</th><th>Actie</th></tr>
-        </thead>
-        <tbody>
-          {% for item in osta_detection.available %}
-            <tr>
-              <td>{{ item.name }}</td>
-              <td class="mono date-nowrap">{{ fmt_date(item.date) }}</td>
-              <td class="mono">{{ item.race_count }}</td>
-              <td>
-                <form method="post" action="/osta/detection/ignore" class="inline-form">
-                  <input type="hidden" name="comp_signature" value="{{ item.signature }}" />
-                  <input type="hidden" name="comp_name" value="{{ item.name }}" />
-                  <input type="hidden" name="comp_date" value="{{ item.date }}" />
-                  <input type="hidden" name="pid" value="{{ item.pid }}" />
-                  <input type="hidden" name="race_count" value="{{ item.race_count }}" />
-                  <button type="submit" class="btn-secondary">Negeer</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div class="row-actions" style="margin-top:10px;">
-        <form method="post" action="/osta/detection/import" class="inline-form">
-          <button type="submit">Importeer alles</button>
-        </form>
-        <a href="/import" class="btn">Naar importpagina</a>
-      </div>
-    </section>
-  {% endif %}
+  <div id="osta-detection-root" data-url="/partial/osta-detection"></div>
 
   <section class="card">
     <div class="grid3">
@@ -190,248 +131,280 @@
     </section>
   </div>
 
-  <section class="card">
-      <details class="trend-filters-shell" {% if trend_filters_open %}open{% endif %}>
-        <summary class="section-header trend-filters-summary">
-          <h2>Ontwikkeling per afstand</h2>
-          <span class="btn-icon" aria-hidden="true"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/filter.svg');" aria-hidden="true"></span></span>
-        </summary>
-        {% if trend_error_message %}
-          <div class="hint hint-warning" style="margin-bottom:10px;">{{ trend_error_message }}</div>
-        {% endif %}
-        <form method="get" action="/" class="form trend-filter-form" id="trend-filters-panel">
-          <label>Periode
-            <select name="trend_period" id="trend_period">
-              <option value="month" {% if selected_trend_period == "month" %}selected{% endif %}>Afgelopen maand</option>
-              <option value="season" {% if selected_trend_period == "season" %}selected{% endif %}>Seizoen</option>
-              <option value="custom" {% if selected_trend_period == "custom" %}selected{% endif %}>Custom datumbereik</option>
-            </select>
-          </label>
-
-          <div class="grid2" id="trend-custom-range" {% if selected_trend_period != "custom" %}hidden{% endif %}>
-            <label>Datum vanaf
-              <div class="date-input">
-                <input class="date-input-text" name="trend_date_from" value="{{ selected_trend_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
-                <input class="date-input-picker" type="date" value="{{ selected_trend_date_from }}" tabindex="-1" aria-hidden="true" />
-                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
-              </div>
-            </label>
-            <label>Datum t/m
-              <div class="date-input">
-                <input class="date-input-text" name="trend_date_to" value="{{ selected_trend_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
-                <input class="date-input-picker" type="date" value="{{ selected_trend_date_to }}" tabindex="-1" aria-hidden="true" />
-                <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
-              </div>
-            </label>
-          </div>
-
-          <div class="row-actions">
-            <button type="submit">Toepassen</button>
-          </div>
-        </form>
-      </details>
-      <p class="muted">Periode: {{ trend_filter_label }}</p>
-      {% if trend_rows|length == 0 %}
-        <p>Nog onvoldoende data voor grafieken.</p>
-      {% else %}
-        <div class="trend-list">
-          {% for trend in trend_rows %}
-            <div class="trend-item">
-              <div class="row">
-                <strong class="mono">{{ trend.distance_m }}m</strong>
-              </div>
-              {% if trend.sparkline %}
-                <div class="sparkline-wrap">
-                  <svg class="sparkline js-sparkline" viewBox="0 0 {{ trend.sparkline.width }} {{ trend.sparkline.height }}" preserveAspectRatio="xMidYMid meet" data-distance="{{ trend.distance_m }}m">
-                    <line
-                      x1="{{ trend.sparkline.left_padding }}"
-                      y1="{{ trend.sparkline.baseline_y }}"
-                      x2="{{ trend.sparkline.width - trend.sparkline.right_padding }}"
-                      y2="{{ trend.sparkline.baseline_y }}"
-                      class="sparkline-axis"
-                    ></line>
-                    {% for tick in trend.sparkline.month_ticks %}
-                      <line
-                        x1="{{ tick.x }}"
-                        y1="{{ trend.sparkline.baseline_y }}"
-                        x2="{{ tick.x }}"
-                        y2="{{ trend.sparkline.baseline_y + 5 }}"
-                        class="sparkline-axis"
-                      ></line>
-                      <text x="{{ tick.x }}" y="{{ trend.sparkline.baseline_y + 16 }}" class="sparkline-label">{{ tick.label }}</text>
-                    {% endfor %}
-                    <polyline points="{{ trend.sparkline.points }}" class="sparkline-line" pathLength="100" />
-                    {% for point in trend.sparkline.circles %}
-                      <circle
-                        cx="{{ point.x }}"
-                        cy="{{ point.y }}"
-                        r="4.5"
-                        data-date="{{ point.tooltip_date }}"
-                        data-name="{{ point.tooltip_name }}"
-                        data-time="{{ point.tooltip_time }}"
-                        data-distance="{{ trend.distance_m }}m"
-                        data-count="{{ point.tooltip_count }}"
-                        data-href="{{ point.href }}"
-                      ></circle>
-                    {% endfor %}
-                  </svg>
-                  <div class="chart-tooltip" hidden>
-                    <div class="chart-tooltip-distance"></div>
-                    <div class="chart-tooltip-time"></div>
-                    <div class="chart-tooltip-name"></div>
-                    <div class="chart-tooltip-date"></div>
-                    <div class="chart-tooltip-count"></div>
-                    <a class="chart-tooltip-link" href="#">Open rit</a>
-                  </div>
-                </div>
-              {% endif %}
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
-  </section>
+  {% include "_home_trends.html" %}
 
   <script>
     (function () {
-      const sparklineWraps = document.querySelectorAll(".sparkline-wrap");
-      const trendPeriod = document.getElementById("trend_period");
-      const trendCustomRange = document.getElementById("trend-custom-range");
+      function initOstaDetection(root) {
+        const scope = root || document;
+        const ostaUpdateDialog = scope.querySelector("#osta-update-dialog");
+        const ostaUpdateLater = scope.querySelector("#osta-update-later");
 
-      if (trendPeriod && trendCustomRange) {
-        function syncTrendRange() {
-          trendCustomRange.hidden = trendPeriod.value !== "custom";
-        }
-
-        trendPeriod.addEventListener("change", syncTrendRange);
-        syncTrendRange();
-      }
-
-      sparklineWraps.forEach((wrap) => {
-        const tooltip = wrap.querySelector(".chart-tooltip");
-        const svg = wrap.querySelector(".js-sparkline");
-        const circles = Array.from(wrap.querySelectorAll("circle"));
-        const distanceEl = tooltip ? tooltip.querySelector(".chart-tooltip-distance") : null;
-        const timeEl = tooltip ? tooltip.querySelector(".chart-tooltip-time") : null;
-        const nameEl = tooltip ? tooltip.querySelector(".chart-tooltip-name") : null;
-        const dateEl = tooltip ? tooltip.querySelector(".chart-tooltip-date") : null;
-        const countEl = tooltip ? tooltip.querySelector(".chart-tooltip-count") : null;
-        const linkEl = tooltip ? tooltip.querySelector(".chart-tooltip-link") : null;
-        const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
-        const tooltipHoverDelayMs = 250;
-        let activeCircle = null;
-        let showTooltipTimer = null;
-
-        if (!tooltip || !svg || !distanceEl || !timeEl || !nameEl || !dateEl || !countEl || !linkEl) {
+        if (!ostaUpdateDialog) {
           return;
         }
 
-        function positionTooltip(circle) {
-          const wrapRect = wrap.getBoundingClientRect();
-          const circleRect = circle.getBoundingClientRect();
-          const tooltipWidth = tooltip.offsetWidth || 180;
-          const tooltipHeight = tooltip.offsetHeight || 120;
-          const centerX = circleRect.left - wrapRect.left + (circleRect.width / 2);
-          const left = Math.min(Math.max(centerX - (tooltipWidth / 2), 8), wrapRect.width - tooltipWidth - 8);
-          const top = Math.max(circleRect.top - wrapRect.top - tooltipHeight - 12, 8);
-          tooltip.style.left = left + "px";
-          tooltip.style.top = top + "px";
+        if (typeof ostaUpdateDialog.showModal === "function" && !ostaUpdateDialog.open) {
+          window.requestAnimationFrame(() => ostaUpdateDialog.showModal());
         }
 
-        function showTooltip(circle) {
-          if (showTooltipTimer !== null) {
-            window.clearTimeout(showTooltipTimer);
-            showTooltipTimer = null;
-          }
-          if (activeCircle && activeCircle !== circle) {
-            activeCircle.classList.remove("is-active");
-          }
-          activeCircle = circle;
-          wrap.classList.add("is-active");
-          circle.classList.add("is-active");
-          distanceEl.textContent = circle.dataset.distance || "";
-          timeEl.textContent = circle.dataset.time || "";
-          nameEl.textContent = circle.dataset.name || "";
-          dateEl.textContent = circle.dataset.date || "";
-          countEl.textContent = `Wedstrijden: ${circle.dataset.count || ""}`;
-          linkEl.href = circle.dataset.href || "#";
-          tooltip.hidden = false;
-          positionTooltip(circle);
-        }
-
-        function hideTooltip() {
-          if (showTooltipTimer !== null) {
-            window.clearTimeout(showTooltipTimer);
-            showTooltipTimer = null;
-          }
-          tooltip.hidden = true;
-          wrap.classList.remove("is-active");
-          if (activeCircle) {
-            activeCircle.classList.remove("is-active");
-            activeCircle = null;
-          }
-        }
-
-        circles.forEach((circle) => {
-          circle.addEventListener("mouseenter", () => {
-            if (isCoarsePointer) {
-              return;
+        if (ostaUpdateLater) {
+          ostaUpdateLater.addEventListener("click", () => {
+            if (ostaUpdateDialog.open) {
+              ostaUpdateDialog.close();
             }
-            if (activeCircle || !tooltip.hidden) {
-              showTooltip(circle);
-              return;
-            }
-            showTooltipTimer = window.setTimeout(() => {
-              showTooltipTimer = null;
-              showTooltip(circle);
-            }, tooltipHoverDelayMs);
           });
+        }
+      }
 
-          circle.addEventListener("click", (event) => {
-            if (!isCoarsePointer) {
-              return;
+      async function loadOstaDetection() {
+        const currentRoot = document.getElementById("osta-detection-root");
+        if (!currentRoot || currentRoot.dataset.loading === "true") {
+          return;
+        }
+
+        currentRoot.dataset.loading = "true";
+
+        try {
+          const response = await fetch(currentRoot.dataset.url || "/partial/osta-detection", {
+            headers: {
+              "X-Requested-With": "fetch"
             }
-            event.preventDefault();
-            event.stopPropagation();
-            showTooltip(circle);
+          });
+          if (!response.ok) {
+            throw new Error("osta detection fetch failed");
+          }
+
+          const html = await response.text();
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, "text/html");
+          const nextRoot = doc.getElementById("osta-detection-root");
+          if (!nextRoot) {
+            throw new Error("osta detection partial missing root");
+          }
+
+          currentRoot.replaceWith(nextRoot);
+          initOstaDetection(nextRoot);
+        } catch (error) {
+          currentRoot.dataset.loading = "false";
+        }
+      }
+
+      function hideAllTrendTooltips() {
+        document.querySelectorAll(".sparkline-wrap.is-active").forEach((wrap) => {
+          wrap.classList.remove("is-active");
+          const tooltip = wrap.querySelector(".chart-tooltip");
+          if (tooltip) {
+            tooltip.hidden = true;
+          }
+          wrap.querySelectorAll("circle.is-active").forEach((circle) => {
+            circle.classList.remove("is-active");
           });
         });
+      }
 
-        svg.addEventListener("click", (event) => {
-          if (!isCoarsePointer) {
+      function initTrendTooltips(root) {
+        const sparklineWraps = (root || document).querySelectorAll(".sparkline-wrap");
+        sparklineWraps.forEach((wrap) => {
+          if (wrap.dataset.tooltipBound === "true") {
+            return;
+          }
+          wrap.dataset.tooltipBound = "true";
+          const tooltip = wrap.querySelector(".chart-tooltip");
+          const svg = wrap.querySelector(".js-sparkline");
+          const circles = Array.from(wrap.querySelectorAll("circle"));
+          const distanceEl = tooltip ? tooltip.querySelector(".chart-tooltip-distance") : null;
+          const timeEl = tooltip ? tooltip.querySelector(".chart-tooltip-time") : null;
+          const nameEl = tooltip ? tooltip.querySelector(".chart-tooltip-name") : null;
+          const dateEl = tooltip ? tooltip.querySelector(".chart-tooltip-date") : null;
+          const linkEl = tooltip ? tooltip.querySelector(".chart-tooltip-link") : null;
+          const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+          const tooltipHoverDelayMs = 250;
+          let activeCircle = null;
+          let showTooltipTimer = null;
+
+          if (!tooltip || !svg || !distanceEl || !timeEl || !nameEl || !dateEl || !linkEl) {
             return;
           }
 
-          const svgRect = svg.getBoundingClientRect();
-          const clickX = event.clientX - svgRect.left;
-          const clickY = event.clientY - svgRect.top;
-          let closestCircle = null;
-          let closestDistance = Number.POSITIVE_INFINITY;
+          function positionTooltip(circle) {
+            const wrapRect = wrap.getBoundingClientRect();
+            const circleRect = circle.getBoundingClientRect();
+            const tooltipWidth = tooltip.offsetWidth || 180;
+            const tooltipHeight = tooltip.offsetHeight || 120;
+            const centerX = circleRect.left - wrapRect.left + (circleRect.width / 2);
+            const left = Math.min(Math.max(centerX - (tooltipWidth / 2), 8), wrapRect.width - tooltipWidth - 8);
+            const top = Math.max(circleRect.top - wrapRect.top - tooltipHeight - 12, 8);
+            tooltip.style.left = left + "px";
+            tooltip.style.top = top + "px";
+          }
+
+          function showTooltip(circle) {
+            if (showTooltipTimer !== null) {
+              window.clearTimeout(showTooltipTimer);
+              showTooltipTimer = null;
+            }
+            if (activeCircle && activeCircle !== circle) {
+              activeCircle.classList.remove("is-active");
+            }
+            activeCircle = circle;
+            wrap.classList.add("is-active");
+            circle.classList.add("is-active");
+            distanceEl.textContent = circle.dataset.distance || "";
+            timeEl.textContent = circle.dataset.time || "";
+            nameEl.textContent = circle.dataset.name || "";
+            dateEl.textContent = circle.dataset.date || "";
+            linkEl.href = circle.dataset.href || "#";
+            tooltip.hidden = false;
+            positionTooltip(circle);
+          }
+
+          function hideTooltip() {
+            if (showTooltipTimer !== null) {
+              window.clearTimeout(showTooltipTimer);
+              showTooltipTimer = null;
+            }
+            tooltip.hidden = true;
+            wrap.classList.remove("is-active");
+            if (activeCircle) {
+              activeCircle.classList.remove("is-active");
+              activeCircle = null;
+            }
+          }
 
           circles.forEach((circle) => {
-            const circleX = (parseFloat(circle.getAttribute("cx")) / svg.viewBox.baseVal.width) * svgRect.width;
-            const circleY = (parseFloat(circle.getAttribute("cy")) / svg.viewBox.baseVal.height) * svgRect.height;
-            const distance = Math.hypot(circleX - clickX, circleY - clickY);
-            if (distance < closestDistance) {
-              closestDistance = distance;
-              closestCircle = circle;
+            circle.addEventListener("mouseenter", () => {
+              if (isCoarsePointer) {
+                return;
+              }
+              if (activeCircle || !tooltip.hidden) {
+                showTooltip(circle);
+                return;
+              }
+              showTooltipTimer = window.setTimeout(() => {
+                showTooltipTimer = null;
+                showTooltip(circle);
+              }, tooltipHoverDelayMs);
+            });
+
+            circle.addEventListener("click", (event) => {
+              if (!isCoarsePointer) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              showTooltip(circle);
+            });
+          });
+
+          svg.addEventListener("click", (event) => {
+            if (!isCoarsePointer) {
+              return;
+            }
+
+            const svgRect = svg.getBoundingClientRect();
+            const clickX = event.clientX - svgRect.left;
+            const clickY = event.clientY - svgRect.top;
+            let closestCircle = null;
+            let closestDistance = Number.POSITIVE_INFINITY;
+
+            circles.forEach((circle) => {
+              const circleX = (parseFloat(circle.getAttribute("cx")) / svg.viewBox.baseVal.width) * svgRect.width;
+              const circleY = (parseFloat(circle.getAttribute("cy")) / svg.viewBox.baseVal.height) * svgRect.height;
+              const distance = Math.hypot(circleX - clickX, circleY - clickY);
+              if (distance < closestDistance) {
+                closestDistance = distance;
+                closestCircle = circle;
+              }
+            });
+
+            if (closestCircle) {
+              event.preventDefault();
+              showTooltip(closestCircle);
             }
           });
 
-          if (closestCircle) {
-            event.preventDefault();
-            showTooltip(closestCircle);
+          if (!isCoarsePointer) {
+            wrap.addEventListener("mouseleave", hideTooltip);
           }
         });
+      }
 
-        if (!isCoarsePointer) {
-          wrap.addEventListener("mouseleave", hideTooltip);
+      if (!window.__trendTooltipGlobalBound) {
+        document.addEventListener("click", (event) => {
+          if (!event.target.closest(".sparkline-wrap")) {
+            hideAllTrendTooltips();
+          }
+        });
+        window.__trendTooltipGlobalBound = true;
+      }
+
+      async function updateHomeTrends(trendSeason, keepEmptySelection) {
+        const currentSection = document.getElementById("home-trends-section");
+        if (!currentSection) {
+          return;
         }
 
-        document.addEventListener("click", (event) => {
-          if (!wrap.contains(event.target)) {
-            hideTooltip();
+        const url = new URL("/partial/home-trends", window.location.origin);
+        if (keepEmptySelection || trendSeason) {
+          url.searchParams.set("trend_season", trendSeason);
+        }
+
+        currentSection.setAttribute("aria-busy", "true");
+        currentSection.classList.add("is-loading");
+
+        try {
+          const response = await fetch(url.toString(), {
+            headers: {
+              "X-Requested-With": "fetch"
+            }
+          });
+          if (!response.ok) {
+            throw new Error("partial fetch failed");
           }
-        });
+
+          const html = await response.text();
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(html, "text/html");
+          const nextSection = doc.getElementById("home-trends-section");
+          if (!nextSection) {
+            throw new Error("partial missing root");
+          }
+
+          currentSection.replaceWith(nextSection);
+          initTrendInteractions(nextSection);
+
+          const nextUrl = new URL(window.location.href);
+          if (keepEmptySelection || trendSeason) {
+            nextUrl.searchParams.set("trend_season", trendSeason);
+          } else {
+            nextUrl.searchParams.delete("trend_season");
+          }
+          window.history.replaceState({}, "", nextUrl.toString());
+        } catch (error) {
+          window.location.assign(url.searchParams.toString() ? `/?${url.searchParams.toString()}` : "/");
+        }
+      }
+
+      function initTrendInteractions(root) {
+        const scope = root || document;
+        const trendForm = scope.querySelector("#trend-filters-panel");
+        const trendSelect = trendForm ? trendForm.querySelector("select[name='trend_season']") : null;
+
+        if (trendSelect && trendSelect.dataset.dynamicBound !== "true") {
+          trendSelect.dataset.dynamicBound = "true";
+          trendSelect.addEventListener("change", () => {
+            updateHomeTrends(trendSelect.value, true);
+          });
+        }
+
+        initTrendTooltips(scope);
+      }
+
+      initTrendInteractions(document);
+      initOstaDetection(document);
+      window.requestAnimationFrame(() => {
+        window.setTimeout(loadOstaDetection, 0);
       });
     })();
   </script>

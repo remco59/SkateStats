@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
   <div class="row">
     <div>
@@ -9,9 +9,7 @@
     <div class="row-actions">
       <a class="btn" href="/competitions/{{ comp.id }}/edit">Bewerken</a>
       <a class="btn" href="/races/new">Nieuwe rit</a>
-      <form method="post" action="/competitions/{{ comp.id }}/delete" class="inline-form" onsubmit="return confirm('Weet je zeker dat je deze wedstrijd en alle gekoppelde ritten wilt verwijderen?');">
-        <button type="submit" class="btn btn-danger">Verwijderen</button>
-      </form>
+      <button type="button" class="btn btn-danger" id="open-competition-delete-dialog">Verwijderen</button>
     </div>
   </div>
 
@@ -30,7 +28,10 @@
           {% for r, m in races %}
             <tr>
               <td class="mono">{{ r.distance_m }}m</td>
-              <td class="mono"><a href="/races/{{ r.id }}">{{ fmt_ms(r.total_time_ms) }}</a>{% if r.dnf == 1 %} (DNF){% endif %}</td>
+              <td class="mono">
+                <a href="/races/{{ r.id }}">{{ fmt_ms(r.total_time_ms) }}</a>{% if r.dnf == 1 %} (DNF){% endif %}
+                {% if r.tag %}<span class="race-tag race-tag-{{ r.tag.css }}">{{ r.tag.label }}</span>{% endif %}
+              </td>
               <td>
                 {% set lane_value = r.lane or "" %}
                 {% set lane_norm = lane_value|lower %}
@@ -54,5 +55,54 @@
       </table>
     {% endif %}
   </section>
-{% endblock %}
 
+  <dialog class="dialog-backdrop" id="competition-delete-dialog">
+    <div class="dialog-content">
+      <h2>Wedstrijd verwijderen?</h2>
+      <p class="muted">Kies hoe je deze wedstrijd wilt verwijderen.</p>
+      <div class="delete-dialog-actions">
+        <form method="post" action="/competitions/{{ comp.id }}/delete" class="inline-form">
+          <button type="submit" class="btn-danger">Verwijderen</button>
+        </form>
+        <form method="post" action="/competitions/{{ comp.id }}/delete-and-blacklist" class="inline-form">
+          <button type="submit" class="btn-secondary">Verwijderen + blacklist</button>
+        </form>
+        <button type="button" class="btn-secondary" id="close-competition-delete-dialog">Annuleren</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    (() => {
+      const dialog = document.getElementById("competition-delete-dialog");
+      const openButton = document.getElementById("open-competition-delete-dialog");
+      const closeButton = document.getElementById("close-competition-delete-dialog");
+
+      if (!dialog || !openButton || !closeButton) {
+        return;
+      }
+
+      openButton.addEventListener("click", () => {
+        if (typeof dialog.showModal === "function") {
+          dialog.showModal();
+          return;
+        }
+        dialog.setAttribute("open", "open");
+      });
+
+      closeButton.addEventListener("click", () => {
+        if (typeof dialog.close === "function") {
+          dialog.close();
+          return;
+        }
+        dialog.removeAttribute("open");
+      });
+
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog && typeof dialog.close === "function") {
+          dialog.close();
+        }
+      });
+    })();
+  </script>
+{% endblock %}

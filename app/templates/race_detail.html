@@ -5,15 +5,14 @@
   <p class="muted">
     {{ fmt_date(race.competition_date) }}
     {% if race.venue %} &bull; {{ race.venue }}{% endif %}
+    {% if race.tag %} &bull; <span class="race-tag race-tag-{{ race.tag.css }}">{{ race.tag.label }}</span>{% endif %}
   </p>
 
   <div class="row-actions">
     <a class="btn" href="/races/{{ race.id }}/compare">Vergelijk rit</a>
     <a class="btn" href="/races/{{ race.id }}/edit">Bewerken</a>
     <a class="btn" href="/races/new?competition_id={{ race.competition_id }}">Nieuwe rit</a>
-    <form method="post" action="/races/{{ race.id }}/delete" class="inline-form" onsubmit="return confirm('Weet je zeker dat je deze rit wilt verwijderen?');">
-      <button type="submit" class="btn btn-danger">Verwijderen</button>
-    </form>
+    <button type="button" class="btn btn-danger" id="open-race-delete-dialog">Verwijderen</button>
   </div>
 
   <section class="card">
@@ -35,7 +34,7 @@
 
     <div class="grid3">
       <div class="stat">
-        <div class="label">Gem. (400m-eq)</div>
+        <div class="label">Gem. ronde</div>
         <div class="value mono">
           {% if metrics.avg_400 is not none %}
             {{ "%.2f"|format(metrics.avg_400) }}
@@ -46,7 +45,7 @@
       </div>
       {% if race.distance_m != 500 %}
         <div class="stat">
-          <div class="label">Gem. verval per ronde (400m-eq)</div>
+          <div class="label">Gem. verval per ronde</div>
           <div class="value mono">
             {% if metrics.avg_fade_per_segment_400eq is not none %}
               {{ "%.2f"|format(metrics.avg_fade_per_segment_400eq) }}
@@ -57,7 +56,7 @@
         </div>
       {% endif %}
       <div class="stat">
-        <div class="label">Verval (laatste - eerste, 400m-eq)</div>
+        <div class="label">Verval (laatste - eerste ronde)</div>
         <div class="value mono">
           {% if metrics.fade_400eq is not none %}
             {{ "%.2f"|format(metrics.fade_400eq) }}
@@ -164,7 +163,53 @@
     {% endif %}
   </section>
 
+  <dialog class="dialog-backdrop" id="race-delete-dialog">
+    <div class="dialog-content">
+      <h2>Rit verwijderen?</h2>
+      <p class="muted">Kies hoe je deze rit wilt verwijderen.</p>
+      <div class="delete-dialog-actions">
+        <form method="post" action="/races/{{ race.id }}/delete" class="inline-form">
+          <button type="submit" class="btn-danger">Verwijderen</button>
+        </form>
+        <form method="post" action="/races/{{ race.id }}/delete-and-blacklist" class="inline-form">
+          <button type="submit" class="btn-secondary">Verwijderen + blacklist</button>
+        </form>
+        <button type="button" class="btn-secondary" id="close-race-delete-dialog">Annuleren</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    (() => {
+      const dialog = document.getElementById("race-delete-dialog");
+      const openButton = document.getElementById("open-race-delete-dialog");
+      const closeButton = document.getElementById("close-race-delete-dialog");
+
+      if (!dialog || !openButton || !closeButton) {
+        return;
+      }
+
+      openButton.addEventListener("click", () => {
+        if (typeof dialog.showModal === "function") {
+          dialog.showModal();
+          return;
+        }
+        dialog.setAttribute("open", "open");
+      });
+
+      closeButton.addEventListener("click", () => {
+        if (typeof dialog.close === "function") {
+          dialog.close();
+          return;
+        }
+        dialog.removeAttribute("open");
+      });
+
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog && typeof dialog.close === "function") {
+          dialog.close();
+        }
+      });
+    })();
+  </script>
 {% endblock %}
-
-
-

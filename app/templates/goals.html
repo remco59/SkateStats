@@ -1,9 +1,9 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
   <div class="row">
     <div>
-      <h1>Doelen en targets</h1>
-      <p class="muted">Leg per afstand je doeltijd en splitdoelen vast.</p>
+      <h1>Targets</h1>
+      <p class="muted">Werk per afstand met doeltijden, pacing-targets en een voorspelling op basis van je recente vorm.</p>
     </div>
   </div>
 
@@ -25,9 +25,9 @@
     <section class="card">
       <div class="message message-success">
         {% if success == "saved" %}
-          Doel opgeslagen.
+          Target opgeslagen.
         {% elif success == "deleted" %}
-          Doel verwijderd.
+          Target verwijderd.
         {% else %}
           Opgeslagen.
         {% endif %}
@@ -35,78 +35,745 @@
     </section>
   {% endif %}
 
-  <section class="card">
-    <h2>Nieuw doel</h2>
-    <form method="post" action="/goals" class="form">
-      <div class="grid2">
-        <label>Afstand
-          <select name="distance_m" required>
-            {% for distance in distances %}
-              <option value="{{ distance }}">{{ distance }}m</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Doeltijd
-          <input name="target_time" placeholder="bijv. 40.50 of 2:12.34" />
-        </label>
-      </div>
+  <section class="card targets-form-card">
+      <h2>Target instellen</h2>
+      <p class="muted">Gebruik de generator om je doeltijd direct om te zetten naar een opening, gemiddelde 400, slot-400 en verval.</p>
 
-      <div class="grid2">
-        <label>Target opening
-          <input name="target_opening" placeholder="bijv. 11.20 of 27.80" />
-        </label>
-        <label>Target gem. 400-eq
-          <input name="target_avg_400" placeholder="bijv. 31.10" />
-        </label>
-      </div>
+      <form method="post" action="/targets" class="form" id="target-form">
+        <div class="grid2">
+          <label>Afstand
+            <select name="distance_m" id="target-distance" required>
+              {% for distance in distances %}
+                <option value="{{ distance }}" {% if distance == 500 %}selected{% endif %}>{{ distance }}m</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Doeltijd
+            <input name="target_time" id="target-time" placeholder="bijv. 40.50 of 2:12.34" />
+          </label>
+        </div>
 
-      <div class="grid2">
-        <label>Target laatste 400-eq
-          <input name="target_last_400" placeholder="bijv. 32.00" />
-        </label>
-        <label>Target verval
-          <input name="target_fade_400" placeholder="bijv. 1.20" />
-        </label>
-      </div>
+        <div class="target-generator-actions">
+          <button type="button" class="target-generate-button" id="generate-target-splits">Genereer targets</button>
+          <button type="button" class="btn-secondary" id="show-target-manual">Handmatig invullen</button>
+        </div>
 
-      <label>Notities
-        <input name="notes" placeholder="Waar wil je op letten?" />
-      </label>
-
-      <div class="row-actions">
-        <button type="submit">Doel opslaan</button>
-      </div>
-    </form>
+        <section class="target-generator-results" id="target-generator-results" hidden>
+          <div class="row">
+            <div>
+              <h3 id="target-generator-title">Gegenereerde targets</h3>
+              <p class="muted" id="target-generator-output">Gebaseerd op je recente ritopbouw per afstand. Zonder historie gebruiken we een standaard pacing-profiel.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Onderdeel</th>
+                  <th>Waarde</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Opening</td>
+                  <td><input class="target-table-input mono" name="target_opening" id="generated-opening" inputmode="decimal" placeholder="bijv. 11.20" /></td>
+                </tr>
+                <tr>
+                  <td>Gem. ronde</td>
+                  <td><input class="target-table-input mono" name="target_avg_400" id="generated-avg-400" inputmode="decimal" placeholder="bijv. 31.10" /></td>
+                </tr>
+                <tr>
+                  <td>Laatste ronde</td>
+                  <td><input class="target-table-input mono" name="target_last_400" id="generated-last-400" inputmode="decimal" placeholder="bijv. 32.00" /></td>
+                </tr>
+                <tr>
+                  <td>Verval</td>
+                  <td><input class="target-table-input mono" name="target_fade_400" id="generated-fade-400" inputmode="decimal" placeholder="bijv. 1.20" /></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="row-actions target-save-actions">
+            <button type="submit" class="target-save-button">Target opslaan</button>
+          </div>
+        </section>
+      </form>
   </section>
 
-  <section class="card">
-    <h2>Bestaande doelen</h2>
-    {% if goals|length == 0 %}
-      <p class="muted">Nog geen doelen vastgelegd.</p>
-    {% else %}
-      <div class="goal-list">
-        {% for goal in goals %}
-          <article class="goal-card">
-            <div class="row">
-              <strong class="mono">{{ goal.distance_m }}m</strong>
-              <form method="post" action="/goals/{{ goal.distance_m }}/delete" class="inline-form">
-                <button type="submit" class="btn-secondary">Verwijderen</button>
-              </form>
-            </div>
-            <div class="goal-metrics">
-              <div><span class="muted">Doeltijd</span><br><span class="mono">{{ fmt_ms(goal.target_time_ms) }}</span></div>
-              <div><span class="muted">Opening</span><br><span class="mono">{{ fmt_ms(goal.target_opening_ms) }}</span></div>
-              <div><span class="muted">Gem. 400-eq</span><br><span class="mono">{{ fmt_ms(goal.target_avg_400_ms) }}</span></div>
-              <div><span class="muted">Laatste 400-eq</span><br><span class="mono">{{ fmt_ms(goal.target_last_400_ms) }}</span></div>
-              <div><span class="muted">Verval</span><br><span class="mono">{{ fmt_ms(goal.target_fade_400_ms) }}</span></div>
-            </div>
-            {% if goal.notes %}
-              <p class="muted">{{ goal.notes }}</p>
-            {% endif %}
-          </article>
-        {% endfor %}
-      </div>
+  <section class="targets-board">
+    {% set active_target_count = targets|length %}
+    {% if active_target_count == 0 %}
+      <article class="card">
+        <h2>Nog geen actieve targets</h2>
+        <p class="muted">Zodra je een target opslaat, verschijnt hier per afstand een compact overzicht met voortgang en forecasting.</p>
+      </article>
     {% endif %}
-  </section>
-{% endblock %}
+    {% for card in target_cards %}
+      {% if card.goal %}
+      <article class="card target-card">
+        <div class="row target-card-head">
+          <div>
+            <h2 class="mono">{{ card.distance_m }}m</h2>
+          </div>
+          <div class="target-card-actions">
+            <button
+              type="button"
+              class="btn-secondary"
+              data-open-target-edit
+              data-distance="{{ card.distance_m }}"
+              data-target-time="{{ fmt_ms(card.goal.target_time_ms) }}"
+              data-target-opening="{{ fmt_ms(card.goal.target_opening_ms) if card.goal.target_opening_ms else '' }}"
+              data-target-avg-400="{{ fmt_ms(card.goal.target_avg_400_ms) if card.goal.target_avg_400_ms else '' }}"
+              data-target-last-400="{{ fmt_ms(card.goal.target_last_400_ms) if card.goal.target_last_400_ms else '' }}"
+              data-target-fade-400="{{ fmt_ms(card.goal.target_fade_400_ms) if card.goal.target_fade_400_ms else '' }}"
+              data-notes="{{ card.goal.notes or '' }}"
+            >Wijzigen</button>
+            <button type="button" class="btn-secondary" data-open-target-delete data-distance="{{ card.distance_m }}">Verwijderen</button>
+          </div>
+        </div>
 
+        <div class="target-card-hero">
+          <div class="target-card-primary">
+            <div class="label">Doeltijd</div>
+            <div class="value mono">{{ fmt_ms(card.goal.target_time_ms) }}</div>
+          </div>
+          <div class="goal-metrics">
+            <div><span class="muted">Opening</span><br><span class="mono">{{ fmt_ms(card.goal.target_opening_ms) if card.goal.target_opening_ms else "-" }}</span></div>
+            {% if card.distance_m != 500 %}
+            <div><span class="muted">Gem. ronde</span><br><span class="mono">{{ fmt_ms(card.goal.target_avg_400_ms) if card.goal.target_avg_400_ms else "-" }}</span></div>
+            {% endif %}
+            <div><span class="muted">Laatste ronde</span><br><span class="mono">{{ fmt_ms(card.goal.target_last_400_ms) if card.goal.target_last_400_ms else "-" }}</span></div>
+            <div><span class="muted">Verval</span><br><span class="mono">{{ fmt_ms(card.goal.target_fade_400_ms) if card.goal.target_fade_400_ms else "-" }}</span></div>
+          </div>
+        </div>
+
+        <section class="target-forecast">
+          {% if card.forecast.status == "reached" %}
+            <p><span class="goal-chip is-good">Target gehaald</span> Je beste tijd staat al op <a href="/races/{{ card.forecast.best_race_id }}">{{ fmt_ms(card.forecast.best_time_ms) }}</a>.</p>
+          {% elif card.forecast.status == "forecast" %}
+            <p>
+              Nog <strong class="mono">{{ fmt_ms(card.forecast.delta_ms) }}</strong> te gaan.
+              Bij je recente lijn van <strong class="mono">{{ fmt_ms(card.forecast.improvement_per_race_ms) }}</strong> winst per rit
+              ligt dit target rond <strong>{{ card.forecast.races_to_target }} ritten</strong> weg.
+              {% if card.forecast.eta_date %}Ruwe ETA: <strong>{{ fmt_date(card.forecast.eta_date) }}</strong>.{% endif %}
+            </p>
+          {% elif card.forecast.status == "flat" %}
+            <p>Je target ligt nog <strong class="mono">{{ fmt_ms(card.forecast.delta_ms) }}</strong> weg, maar je laatste ritten laten nog geen stijgende lijn zien.</p>
+          {% elif card.forecast.status == "insufficient" %}
+            <p>Er is nog te weinig recente data om een forecast te maken. Voeg minimaal drie geldige tijden toe op deze afstand.</p>
+          {% elif card.forecast.status == "no_data" %}
+            <p>Er is nog geen geldige tijd op deze afstand om een forecast op te baseren.</p>
+          {% else %}
+            <p>Voeg een doeltijd toe om forecasting voor deze afstand te activeren.</p>
+          {% endif %}
+        </section>
+
+        <section class="target-progress">
+          <h3>Voortgang</h3>
+          {% if card.progress_rows %}
+            <div class="targets-progress-grid">
+              {% for row in card.progress_rows %}
+                {% if not (card.distance_m == 500 and row.label == "Gem. ronde") %}
+                <div class="target-progress-item{% if row.met_goal %} target-progress-item-good{% endif %}">
+                  <div class="label">{{ row.label }}</div>
+                  <div class="mono">{{ fmt_ms(row.actual_ms) if row.actual_ms is not none else "-" }}</div>
+                  <div class="{% if row.met_goal %}delta-good{% else %}delta-bad{% endif %}">
+                    {% if row.delta_ms is not none %}
+                      {% if row.delta_ms > 0 %}+{% endif %}{{ fmt_ms(row.delta_ms) }}
+                    {% else %}
+                      -
+                    {% endif %}
+                  </div>
+                </div>
+                {% endif %}
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="muted">Nog geen targetprogressie beschikbaar.</p>
+          {% endif %}
+        </section>
+
+        <details
+          class="target-splits-details js-target-splits"
+          data-distance="{{ card.distance_m }}"
+          data-target-time="{{ card.goal.target_time_ms }}"
+          data-target-opening="{{ card.goal.target_opening_ms if card.goal.target_opening_ms is not none else '' }}"
+          data-target-avg-round="{{ card.goal.target_avg_400_ms if card.goal.target_avg_400_ms is not none else '' }}"
+          data-target-last-round="{{ card.goal.target_last_400_ms if card.goal.target_last_400_ms is not none else '' }}"
+        >
+          <summary class="target-splits-summary">
+            <span>Live split-simulatie</span>
+            <span class="target-splits-chevron line-md-icon" style="--icon-url:url('/static/icons/line-md/plus.svg');" aria-hidden="true"></span>
+          </summary>
+          <div class="target-splits-body">
+            <div class="table-wrap">
+              <table class="target-splits-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Afstand</th>
+                    <th>Split</th>
+                    <th>Cumulatief</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+                <tfoot>
+                  <tr>
+                    <td colspan="2">Totaal</td>
+                    <td class="mono js-target-splits-total">-</td>
+                    <td class="mono js-target-splits-cumulative">-</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        </details>
+      </article>
+      {% endif %}
+    {% endfor %}
+  </section>
+
+  <dialog class="dialog-backdrop" id="target-delete-dialog">
+    <div class="dialog-content">
+      <h2 id="target-delete-title">Target verwijderen?</h2>
+      <p class="muted" id="target-delete-copy">Weet je zeker dat je dit target wilt verwijderen?</p>
+      <div class="delete-dialog-actions">
+        <form method="post" action="/targets/0/delete" class="inline-form" id="target-delete-form">
+          <button type="submit" class="btn-danger">Verwijderen</button>
+        </form>
+        <button type="button" class="btn-secondary" id="close-target-delete-dialog">Annuleren</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="dialog-backdrop target-edit-dialog" id="target-edit-dialog">
+    <div class="dialog-content">
+      <div class="row">
+        <div>
+          <h2 id="target-edit-title">Target wijzigen</h2>
+          <p class="muted">Genereer nieuwe splits en stuur ze daarna direct handmatig bij.</p>
+        </div>
+      </div>
+
+      <form method="post" action="/targets" class="form" id="target-edit-form">
+        <input type="hidden" name="distance_m" id="target-edit-distance" />
+
+        <div class="grid2">
+          <label>Afstand
+            <input id="target-edit-distance-label" disabled />
+          </label>
+          <label>Doeltijd
+            <input name="target_time" id="target-edit-time" placeholder="bijv. 40.50 of 2:12.34" />
+          </label>
+        </div>
+
+        <div class="target-generator-actions">
+          <button type="button" class="target-generate-button" id="generate-target-splits-edit">Genereer targets</button>
+        </div>
+
+        <section class="target-generator-results" id="target-generator-results-edit">
+          <div class="row">
+            <div>
+              <h3 id="target-generator-title-edit">Gegenereerde targets</h3>
+              <p class="muted" id="target-generator-output-edit">Gebruik de generator als startpunt en wijzig de velden daaronder direct als nodig.</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Onderdeel</th>
+                  <th>Waarde</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Opening</td>
+                  <td><input class="target-table-input mono" name="target_opening" id="generated-opening-edit" inputmode="decimal" placeholder="bijv. 11.20" /></td>
+                </tr>
+                <tr>
+                  <td>Gem. ronde</td>
+                  <td><input class="target-table-input mono" name="target_avg_400" id="generated-avg-400-edit" inputmode="decimal" placeholder="bijv. 31.10" /></td>
+                </tr>
+                <tr>
+                  <td>Laatste ronde</td>
+                  <td><input class="target-table-input mono" name="target_last_400" id="generated-last-400-edit" inputmode="decimal" placeholder="bijv. 32.00" /></td>
+                </tr>
+                <tr>
+                  <td>Verval</td>
+                  <td><input class="target-table-input mono" name="target_fade_400" id="generated-fade-400-edit" inputmode="decimal" placeholder="bijv. 1.20" /></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="row-actions target-modal-actions">
+          <button type="submit" class="target-save-button">Wijzigingen opslaan</button>
+          <button type="button" class="btn-secondary target-cancel-button" id="close-target-edit-dialog">Annuleren</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <script>
+    (function () {
+      const profiles = {{ generator_profiles_json|safe }};
+
+      function parseTimeToMs(value) {
+        const raw = (value || "").trim();
+        if (!raw) {
+          return null;
+        }
+        if (raw.includes(":")) {
+          const parts = raw.split(":");
+          if (parts.length !== 2) {
+            return null;
+          }
+          const minutes = Number(parts[0]);
+          const seconds = Number(parts[1]);
+          if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+            return null;
+          }
+          return Math.round(((minutes * 60) + seconds) * 1000);
+        }
+        const seconds = Number(raw);
+        return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
+      }
+
+      function formatMs(ms) {
+        if (ms === null || ms === undefined || Number.isNaN(ms)) {
+          return "-";
+        }
+        const totalSeconds = ms / 1000;
+        if (totalSeconds >= 60) {
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = (totalSeconds - (minutes * 60)).toFixed(2).padStart(5, "0");
+          return `${minutes}:${seconds}`;
+        }
+        return totalSeconds.toFixed(2);
+      }
+
+      function computeTargets(distance, targetTimeMs, profile) {
+        if (!targetTimeMs || !distance) {
+          return null;
+        }
+        const openingSplitMap = {100: 100, 300: 100, 500: 100, 1000: 200, 1500: 300, 3000: 200, 5000: 200, 10000: 200};
+        const openingDefaults = {100: 1.0, 300: 0.34, 500: 0.275, 1000: 0.275, 1500: 0.19, 3000: 0.105, 5000: 0.066, 10000: 0.034};
+        const lastDefaults = {100: 1.0, 300: 1.0, 500: 0.73, 1000: 0.41, 1500: 0.285, 3000: 0.145, 5000: 0.088, 10000: 0.045};
+        const fadeDefaults = {100: 0.0, 300: 0.02, 500: 0.05, 1000: 0.08, 1500: 0.09, 3000: 0.11, 5000: 0.12, 10000: 0.13};
+        const opening = Math.round(targetTimeMs * (profile && profile.opening_ratio != null ? profile.opening_ratio : openingDefaults[distance]));
+        const remainingDistance = Math.max(distance - (openingSplitMap[distance] || 200), 0);
+        const remainingTime = Math.max(targetTimeMs - opening, 0);
+        const avg400 = remainingDistance > 0 ? Math.round((remainingTime * 400) / remainingDistance) : null;
+        const last400 = Math.round(targetTimeMs * (profile && profile.last_400_ratio != null ? profile.last_400_ratio : lastDefaults[distance]));
+        const fade = avg400 != null ? Math.round(avg400 * (profile && profile.fade_ratio != null ? profile.fade_ratio : fadeDefaults[distance])) : null;
+        return { opening, avg400, last400, fade };
+      }
+
+      function segmentDistancesForTarget(distance) {
+        const openingSplitMap = {100: 100, 500: 100, 1500: 300};
+        if (!distance) {
+          return [];
+        }
+        const first = Math.min(openingSplitMap[distance] || 200, distance);
+        if (distance <= first) {
+          return [distance];
+        }
+        const segments = [first];
+        let remaining = Math.max(distance - first, 0);
+        while (remaining > 0) {
+          const segment = Math.min(400, remaining);
+          segments.push(segment);
+          remaining -= segment;
+        }
+        return segments;
+      }
+
+      function buildTargetSplitPlan(distance, targetTimeMs, openingMs, avgRoundMs, lastRoundMs) {
+        const segments = segmentDistancesForTarget(distance);
+        if (!targetTimeMs || !segments.length) {
+          return [];
+        }
+        if (segments.length === 1) {
+          return [{ index: 1, distanceM: segments[0], splitMs: targetTimeMs }];
+        }
+
+        const opening = openingMs != null ? openingMs : Math.round((targetTimeMs * segments[0]) / distance);
+        const remainingSegments = segments.slice(1);
+        const remainingTargetMs = Math.max(targetTimeMs - opening, 0);
+        let remainingSplits = [];
+
+        if (remainingSegments.length === 1) {
+          remainingSplits = [remainingTargetMs];
+        } else {
+          const avgRound = avgRoundMs != null ? avgRoundMs : Math.round((remainingTargetMs * 400) / remainingSegments.reduce((sum, value) => sum + value, 0));
+          const lastRound = lastRoundMs != null ? lastRoundMs : avgRound;
+          const firstRound = (2 * avgRound) - lastRound;
+          const eqValues = remainingSegments.map((_, index) => {
+            if (remainingSegments.length === 1) {
+              return lastRound;
+            }
+            return firstRound + (((lastRound - firstRound) * index) / (remainingSegments.length - 1));
+          });
+          remainingSplits = eqValues.map((eqValue, index) => Math.max(Math.round(eqValue * remainingSegments[index] / 400), 0));
+          if (remainingSplits.length) {
+            const usedBeforeLast = remainingSplits.slice(0, -1).reduce((sum, value) => sum + value, 0);
+            remainingSplits[remainingSplits.length - 1] = Math.max(remainingTargetMs - usedBeforeLast, 0);
+          }
+        }
+
+        const splitMs = [opening, ...remainingSplits];
+        if (splitMs.length) {
+          const usedBeforeLast = splitMs.slice(0, -1).reduce((sum, value) => sum + value, 0);
+          splitMs[splitMs.length - 1] = Math.max(targetTimeMs - usedBeforeLast, 0);
+        }
+
+        return segments.map((distanceM, index) => ({
+          index: index + 1,
+          distanceM,
+          splitMs: splitMs[index] || 0,
+        }));
+      }
+
+      function rebalanceTargetSplits(rows, editedIndex, targetTimeMs) {
+        const previousTotal = rows.slice(0, editedIndex).reduce((sum, row) => sum + row.splitMs, 0);
+        if (editedIndex === rows.length - 1) {
+          rows[editedIndex].splitMs = Math.max(rows[editedIndex].splitMs, 0);
+          return {
+            rows,
+            totalTimeMs: rows.reduce((sum, row) => sum + row.splitMs, 0),
+          };
+        }
+
+        const maxAllowed = Math.max(targetTimeMs - previousTotal, 0);
+        rows[editedIndex].splitMs = Math.min(rows[editedIndex].splitMs, maxAllowed);
+
+        const lockedTotal = rows.slice(0, editedIndex + 1).reduce((sum, row) => sum + row.splitMs, 0);
+        const remainingRows = rows.slice(editedIndex + 1);
+        const remainingTargetMs = Math.max(targetTimeMs - lockedTotal, 0);
+
+        if (!remainingRows.length) {
+          rows[editedIndex].splitMs = Math.max(targetTimeMs - previousTotal, 0);
+          return { rows, totalTimeMs: targetTimeMs };
+        }
+
+        const baseTotal = remainingRows.reduce((sum, row) => sum + row.splitMs, 0);
+        if (baseTotal <= 0) {
+          const evenValue = Math.floor(remainingTargetMs / remainingRows.length);
+          remainingRows.forEach((row, index) => {
+            row.splitMs = evenValue;
+            if (index === remainingRows.length - 1) {
+              row.splitMs = Math.max(remainingTargetMs - (evenValue * (remainingRows.length - 1)), 0);
+            }
+          });
+          return { rows, totalTimeMs: targetTimeMs };
+        }
+
+        let distributed = 0;
+        remainingRows.forEach((row, index) => {
+          if (index === remainingRows.length - 1) {
+            row.splitMs = Math.max(remainingTargetMs - distributed, 0);
+            return;
+          }
+          row.splitMs = Math.max(Math.round((row.splitMs / baseTotal) * remainingTargetMs), 0);
+          distributed += row.splitMs;
+        });
+        return { rows, totalTimeMs: targetTimeMs };
+      }
+
+      function renderTargetSplitTable(detailsEl, rows, targetTimeMs) {
+        const tbody = detailsEl.querySelector("tbody");
+        const totalEl = detailsEl.querySelector(".js-target-splits-total");
+        const cumulativeEl = detailsEl.querySelector(".js-target-splits-cumulative");
+        if (!tbody || !totalEl || !cumulativeEl) {
+          return;
+        }
+
+        tbody.innerHTML = "";
+        let cumulative = 0;
+        rows.forEach((row, index) => {
+          cumulative += row.splitMs;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td class="mono">${row.index}</td>
+            <td class="mono">${row.distanceM}m</td>
+            <td><input class="target-table-input mono js-target-split-input" data-index="${index}" inputmode="decimal" value="${formatMs(row.splitMs)}" /></td>
+            <td class="mono">${formatMs(cumulative)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        totalEl.textContent = formatMs(targetTimeMs);
+        cumulativeEl.textContent = formatMs(rows.reduce((sum, row) => sum + row.splitMs, 0));
+      }
+
+      function initTargetSplitDetails() {
+        const splitDetails = document.querySelectorAll(".js-target-splits");
+        splitDetails.forEach((detailsEl) => {
+          const distance = Number(detailsEl.dataset.distance || 0);
+          let targetTimeMs = Number(detailsEl.dataset.targetTime || 0);
+          const openingMs = detailsEl.dataset.targetOpening ? Number(detailsEl.dataset.targetOpening) : null;
+          const avgRoundMs = detailsEl.dataset.targetAvgRound ? Number(detailsEl.dataset.targetAvgRound) : null;
+          const lastRoundMs = detailsEl.dataset.targetLastRound ? Number(detailsEl.dataset.targetLastRound) : null;
+          let rows = buildTargetSplitPlan(distance, targetTimeMs, openingMs, avgRoundMs, lastRoundMs);
+
+          const render = () => renderTargetSplitTable(detailsEl, rows, targetTimeMs);
+
+          detailsEl.addEventListener("toggle", () => {
+            if (detailsEl.open) {
+              render();
+            }
+          });
+
+          detailsEl.addEventListener("change", (event) => {
+            const input = event.target;
+            if (!(input instanceof HTMLInputElement) || !input.classList.contains("js-target-split-input")) {
+              return;
+            }
+            const index = Number(input.dataset.index || -1);
+            const parsed = parseTimeToMs(input.value);
+            if (!Number.isFinite(index) || index < 0 || index >= rows.length || parsed === null) {
+              return;
+            }
+            rows[index].splitMs = parsed;
+            const nextState = rebalanceTargetSplits(rows, index, targetTimeMs);
+            rows = nextState.rows;
+            targetTimeMs = nextState.totalTimeMs;
+            render();
+          });
+
+          detailsEl.addEventListener("click", (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement)) {
+              return;
+            }
+            if (target.closest("summary")) {
+              return;
+            }
+            const row = target.closest("tr");
+            if (!row) {
+              return;
+            }
+            const input = row.querySelector(".js-target-split-input");
+            if (!(input instanceof HTMLInputElement)) {
+              return;
+            }
+            if (target !== input) {
+              input.focus();
+              input.select();
+            }
+          });
+
+          detailsEl.addEventListener("keydown", (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLInputElement) || !target.classList.contains("js-target-split-input")) {
+              return;
+            }
+            if (event.key !== "Enter") {
+              return;
+            }
+            event.preventDefault();
+            const inputs = Array.from(detailsEl.querySelectorAll(".js-target-split-input"));
+            const currentIndex = inputs.indexOf(target);
+            if (currentIndex === -1) {
+              return;
+            }
+            const nextInput = inputs[currentIndex + 1];
+            if (nextInput instanceof HTMLInputElement) {
+              nextInput.focus();
+              nextInput.select();
+            }
+          });
+        });
+      }
+
+      function initTargetGenerator(config) {
+        const distanceInput = config.distanceInput;
+        const timeInput = config.timeInput;
+        const generateButton = config.generateButton;
+        const manualButton = config.manualButton;
+        const resultsSection = config.resultsSection;
+        const title = config.title;
+        const output = config.output;
+        const generatedOpening = config.generatedOpening;
+        const generatedAvg400 = config.generatedAvg400;
+        const generatedLast400 = config.generatedLast400;
+        const generatedFade = config.generatedFade;
+
+        if (!distanceInput || !timeInput || !generateButton || !resultsSection || !title || !output || !generatedOpening || !generatedAvg400 || !generatedLast400 || !generatedFade) {
+          return null;
+        }
+
+        resultsSection.hidden = true;
+
+        function setGeneratedValues(generated, message) {
+          if (!generated) {
+            resultsSection.hidden = true;
+            generatedOpening.value = "";
+            generatedAvg400.value = "";
+            generatedLast400.value = "";
+            generatedFade.value = "";
+            output.textContent = message || "Vul eerst een geldige afstand en doeltijd in.";
+            return false;
+          }
+
+          const openingText = formatMs(generated.opening);
+          const avg400Text = formatMs(generated.avg400);
+          const last400Text = formatMs(generated.last400);
+          const fadeText = formatMs(generated.fade);
+
+          generatedOpening.value = openingText;
+          generatedAvg400.value = avg400Text;
+          generatedLast400.value = last400Text;
+          generatedFade.value = fadeText;
+          title.textContent = "Gegenereerde targets";
+          resultsSection.hidden = false;
+          output.textContent = message || "Targets gegenereerd. Pas de rondes hieronder aan als je wilt bijsturen.";
+          return true;
+        }
+
+        generateButton.addEventListener("click", () => {
+          const distance = Number(distanceInput.value || 0);
+          const targetTimeMs = parseTimeToMs(timeInput.value);
+          const profile = profiles[String(distance)] || profiles[distance] || null;
+          const generated = computeTargets(distance, targetTimeMs, profile);
+          const sampleSize = profile && profile.sample_size ? ` op basis van ${profile.sample_size} recente ritten` : "";
+          setGeneratedValues(generated, generated ? `Gebaseerd${sampleSize}. Pas de velden hieronder aan als je wilt bijsturen.` : "Vul eerst een geldige afstand en doeltijd in.");
+        });
+
+        if (manualButton) {
+          manualButton.addEventListener("click", () => {
+            title.textContent = "Targetwaardes";
+            output.textContent = "Vul hieronder handmatig je targetwaardes in.";
+            resultsSection.hidden = false;
+          });
+        }
+
+        return {
+          setGeneratedValues,
+          primeFromManual() {
+            resultsSection.hidden = true;
+          },
+        };
+      }
+
+      const createGenerator = initTargetGenerator({
+        distanceInput: document.getElementById("target-distance"),
+        timeInput: document.getElementById("target-time"),
+        generateButton: document.getElementById("generate-target-splits"),
+        manualButton: document.getElementById("show-target-manual"),
+        resultsSection: document.getElementById("target-generator-results"),
+        title: document.getElementById("target-generator-title"),
+        output: document.getElementById("target-generator-output"),
+        generatedOpening: document.getElementById("generated-opening"),
+        generatedAvg400: document.getElementById("generated-avg-400"),
+        generatedLast400: document.getElementById("generated-last-400"),
+        generatedFade: document.getElementById("generated-fade-400"),
+      });
+      initTargetSplitDetails();
+
+      const editDialog = document.getElementById("target-edit-dialog");
+      const editCloseButton = document.getElementById("close-target-edit-dialog");
+      const editTitle = document.getElementById("target-edit-title");
+      const editDistanceInput = document.getElementById("target-edit-distance");
+      const editDistanceLabel = document.getElementById("target-edit-distance-label");
+      const editTimeInput = document.getElementById("target-edit-time");
+      const editButtons = document.querySelectorAll("[data-open-target-edit]");
+      const deleteDialog = document.getElementById("target-delete-dialog");
+      const deleteButtons = document.querySelectorAll("[data-open-target-delete]");
+      const deleteCloseButton = document.getElementById("close-target-delete-dialog");
+      const deleteForm = document.getElementById("target-delete-form");
+      const deleteTitle = document.getElementById("target-delete-title");
+      const deleteCopy = document.getElementById("target-delete-copy");
+
+      const editGenerator = initTargetGenerator({
+        distanceInput: editDistanceInput,
+        timeInput: editTimeInput,
+        generateButton: document.getElementById("generate-target-splits-edit"),
+        resultsSection: document.getElementById("target-generator-results-edit"),
+        title: document.getElementById("target-generator-title-edit"),
+        output: document.getElementById("target-generator-output-edit"),
+        generatedOpening: document.getElementById("generated-opening-edit"),
+        generatedAvg400: document.getElementById("generated-avg-400-edit"),
+        generatedLast400: document.getElementById("generated-last-400-edit"),
+        generatedFade: document.getElementById("generated-fade-400-edit"),
+      });
+
+      function openEditDialog(button) {
+        if (!editDialog || !editGenerator || !editDistanceInput || !editDistanceLabel || !editTimeInput || !editTitle) {
+          return;
+        }
+        const distance = button.dataset.distance || "";
+        editTitle.textContent = `Target wijzigen ${distance}m`;
+        editDistanceInput.value = distance;
+        editDistanceLabel.value = distance ? `${distance}m` : "";
+        editTimeInput.value = button.dataset.targetTime || "";
+        document.getElementById("generated-opening-edit").value = button.dataset.targetOpening || "";
+        document.getElementById("generated-avg-400-edit").value = button.dataset.targetAvg400 || "";
+        document.getElementById("generated-last-400-edit").value = button.dataset.targetLast400 || "";
+        document.getElementById("generated-fade-400-edit").value = button.dataset.targetFade400 || "";
+        document.getElementById("target-generator-title-edit").textContent = "Targetwaardes";
+        document.getElementById("target-generator-output-edit").textContent = "Pas hieronder direct de targetwaardes aan of genereer ze opnieuw.";
+        document.getElementById("target-generator-results-edit").hidden = false;
+        openDialog(editDialog);
+      }
+
+      function closeEditDialog() {
+        closeDialog(editDialog);
+      }
+
+      function openDialog(dialog) {
+        if (!dialog) {
+          return;
+        }
+        if (typeof dialog.showModal === "function") {
+          dialog.showModal();
+          return;
+        }
+        dialog.setAttribute("open", "open");
+      }
+
+      function closeDialog(dialog) {
+        if (!dialog) {
+          return;
+        }
+        if (typeof dialog.close === "function") {
+          dialog.close();
+          return;
+        }
+        dialog.removeAttribute("open");
+      }
+
+      if (editButtons.length && editDialog && editCloseButton) {
+        editButtons.forEach((button) => {
+          button.addEventListener("click", () => openEditDialog(button));
+        });
+        editCloseButton.addEventListener("click", closeEditDialog);
+        editDialog.addEventListener("click", (event) => {
+          if (event.target === editDialog) {
+            closeEditDialog();
+          }
+        });
+      }
+
+      if (deleteButtons.length && deleteDialog && deleteCloseButton && deleteForm && deleteTitle && deleteCopy) {
+        deleteButtons.forEach((button) => {
+          button.addEventListener("click", () => {
+            const distance = button.dataset.distance || "";
+            deleteForm.action = `/targets/${distance}/delete`;
+            deleteTitle.textContent = `Target ${distance}m verwijderen?`;
+            deleteCopy.textContent = `Weet je zeker dat je het target voor ${distance}m wilt verwijderen?`;
+            openDialog(deleteDialog);
+          });
+        });
+        deleteCloseButton.addEventListener("click", () => closeDialog(deleteDialog));
+        deleteDialog.addEventListener("click", (event) => {
+          if (event.target === deleteDialog) {
+            closeDialog(deleteDialog);
+          }
+        });
+      }
+    })();
+  </script>
+{% endblock %}

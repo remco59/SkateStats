@@ -1,323 +1,73 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block content %}
   <h1>Statistieken</h1>
+  {% include "_stats_content.html" %}
 
-  <section class="card">
-    <form method="get" action="/stats" class="form">
-      <div class="grid2">
-        <label>Seizoen
-          <select name="season">
-            <option value="">Alle seizoenen</option>
-            {% for season_label in season_options %}
-              <option value="{{ season_label }}" {% if selected_season == season_label %}selected{% endif %}>{{ season_label }}</option>
-            {% endfor %}
-          </select>
-        </label>
+  <script>
+    (function () {
+      async function updateStatsContent(searchParams) {
+        const currentContent = document.getElementById("stats-content");
+        if (!currentContent) {
+          return;
+        }
 
-        <label>Afstand
-          <select name="distance_m">
-            <option value="">Alle afstanden</option>
-            {% for distance in distance_options %}
-              <option value="{{ distance }}" {% if selected_distance == (distance|string) %}selected{% endif %}>{{ distance }}m</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
+        const url = new URL("/partial/stats-content", window.location.origin);
+        url.search = searchParams.toString();
+        currentContent.classList.add("is-loading");
+        currentContent.setAttribute("aria-busy", "true");
 
-      <div class="row-actions">
-        <button type="submit">Toepassen</button>
-        <a class="btn" href="/stats">Reset</a>
-      </div>
-    </form>
-  </section>
+        try {
+          const response = await fetch(url.toString(), { headers: { "X-Requested-With": "fetch" } });
+          if (!response.ok) {
+            throw new Error("stats partial fetch failed");
+          }
 
-  <section class="card">
-    <h2>Basisstatistieken</h2>
-    <div class="grid3">
-      <div class="stat">
-        <div class="label">Totaal aantal wedstrijden</div>
-        <div class="value mono">{{ basic_stats.competition_count }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Totaal aantal ritten</div>
-        <div class="value mono">{{ basic_stats.race_count }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Totaal aantal kilometers</div>
-        <div class="value mono">{{ "%.1f"|format(basic_stats.total_km) }} km</div>
-      </div>
-      <div class="stat">
-        <div class="label">Aantal PR's</div>
-        <div class="value mono">{{ basic_stats.pb_count }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Aantal SB's</div>
-        <div class="value mono">{{ basic_stats.sb_count }}</div>
-      </div>
-    </div>
-  </section>
+          const html = await response.text();
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          const nextContent = doc.getElementById("stats-content");
+          if (!nextContent) {
+            throw new Error("stats partial missing root");
+          }
 
-  <section class="card">
-    <h2>Gemiddelde Tijden Per Afstand</h2>
-    {% if average_rows|length == 0 %}
-      <p>Geen data beschikbaar voor deze filters.</p>
-    {% else %}
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Afstand</th>
-              <th>PB</th>
-              <th>Seizoensbeste{% if sb_reference_season %} ({{ sb_reference_season }}){% endif %}</th>
-              <th>Gemiddelde</th>
-              <th>Mediaan</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in average_rows %}
-              <tr>
-                <td class="mono">{{ row.distance_m }}m</td>
-                <td class="mono"><a href="/races/{{ row.pb_race_id }}">{{ fmt_ms(row.pb_ms) }}</a></td>
-                <td class="mono">
-                  {% if row.season_best_ms is not none and row.season_best_race_id is not none %}
-                    <a href="/races/{{ row.season_best_race_id }}">{{ fmt_ms(row.season_best_ms) }}</a>
-                  {% else %}
-                    -
-                  {% endif %}
-                </td>
-                <td class="mono">{{ fmt_ms(row.average_ms) }}</td>
-                <td class="mono">{{ fmt_ms(row.median_ms) }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% endif %}
-  </section>
+          currentContent.replaceWith(nextContent);
+          bindStatsFilters(nextContent);
 
-  <section class="card">
-    <h2>Split Statistieken</h2>
-    {% if split_rows|length == 0 %}
-      <p>Geen splitdata beschikbaar voor deze filters.</p>
-    {% else %}
-      <div class="trend-list">
-        {% for row in split_rows %}
-          <div class="trend-item">
-            <h3 class="mono">{{ row.distance_m }}m</h3>
-            <table>
-              <tbody>
-                <tr>
-                  <th>Gemiddelde opening</th>
-                  <td class="mono">{{ fmt_sec(row.avg_opening_s) }}</td>
-                </tr>
-                <tr>
-                  <th>Beste opening</th>
-                  <td class="mono">{{ fmt_sec(row.best_opening_s) }}</td>
-                </tr>
-                <tr>
-                  <th>Gemiddelde ronde</th>
-                  <td class="mono">{{ fmt_sec(row.avg_lap_s) }}</td>
-                </tr>
-                <tr>
-                  <th>Beste ronde</th>
-                  <td class="mono">{{ fmt_sec(row.best_lap_s) }}</td>
-                </tr>
-                <tr>
-                  <th>Gem fade</th>
-                  <td class="mono">
-                    {% if row.avg_fade_s is none %}
-                      -
-                    {% else %}
-                      <span class="{% if row.avg_fade_s <= 0 %}delta-good{% else %}delta-bad{% endif %}">
-                        {% if row.avg_fade_s > 0 %}+{% endif %}{{ fmt_sec(row.avg_fade_s) }}
-                      </span>
-                    {% endif %}
-                  </td>
-                </tr>
-                {% for lap_row in row.lap_averages %}
-                  <tr>
-                    <th>Gem ronde {{ lap_row.lap_no }}</th>
-                    <td class="mono">{{ fmt_sec(lap_row.avg_s) }}</td>
-                  </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        {% endfor %}
-      </div>
-    {% endif %}
-  </section>
+          const nextUrl = new URL(window.location.href);
+          nextUrl.search = searchParams.toString();
+          window.history.replaceState({}, "", nextUrl.toString());
+        } catch (error) {
+          window.location.assign(searchParams.toString() ? `/stats?${searchParams.toString()}` : "/stats");
+        }
+      }
 
-  <div class="grid">
-    <section class="card">
-      <h2>Consistentie Statistieken</h2>
-      {% if consistency_rows|length == 0 %}
-        <p>Geen data beschikbaar.</p>
-      {% else %}
-        <table>
-          <thead>
-            <tr>
-              <th>Afstand</th>
-              <th>Standaardafwijking</th>
-              <th>Spreiding</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in consistency_rows %}
-              <tr>
-                <td class="mono">{{ row.distance_m }}m</td>
-                <td class="mono">{{ fmt_ms(row.std_dev_ms) }}</td>
-                <td class="mono">{{ fmt_ms(row.range_ms) }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% endif %}
-    </section>
+      function bindStatsFilters(root) {
+        const form = (root || document).querySelector("#stats-filter-form");
+        if (!form || form.dataset.dynamicBound === "true") {
+          return;
+        }
 
-    <section class="card">
-      <h2>Baanstatistieken</h2>
-      {% if track_rows|length == 0 %}
-        <p>Geen baan-data beschikbaar.</p>
-      {% else %}
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Baan</th>
-                <th>Ritten</th>
-                <th>Gem. 500</th>
-                <th>Beste</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in track_rows %}
-                <tr>
-                  <td>{{ row.track }}</td>
-                  <td class="mono">{{ row.race_count }}</td>
-                  <td class="mono">{{ fmt_ms(row.avg_500eq_ms) }}</td>
-                  <td class="mono">{{ fmt_ms(row.best_500eq_ms) }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        <p class="muted">
-          Beste baan:
-          {% if best_track_summary %}
-            {{ best_track_summary.name }}
-            (<span class="{% if best_track_summary.delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
-              {% if best_track_summary.delta_ms > 0 %}+{% endif %}{{ fmt_ms(best_track_summary.delta_ms) }}
-            </span> t.o.v. gemiddelde)
-          {% else %}
-            -
-          {% endif %}
-        </p>
-        <p class="muted">
-          Slechtste baan:
-          {% if worst_track_summary %}
-            {{ worst_track_summary.name }}
-            (<span class="{% if worst_track_summary.delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
-              {% if worst_track_summary.delta_ms > 0 %}+{% endif %}{{ fmt_ms(worst_track_summary.delta_ms) }}
-            </span> t.o.v. gemiddelde)
-          {% else %}
-            -
-          {% endif %}
-        </p>
-      {% endif %}
-    </section>
-  </div>
+        form.dataset.dynamicBound = "true";
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          updateStatsContent(new URLSearchParams(new FormData(form)));
+        });
 
-  <section class="card">
-    <h2>Progressie Statistieken</h2>
-    {% if progress_rows|length == 0 %}
-      <p>Geen progressiedata beschikbaar.</p>
-    {% else %}
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Afstand</th>
-              <th>Eerste rit</th>
-              <th>Laatste rit</th>
-              <th>Verbetering</th>
-              <th>Gem. laatste 5</th>
-              <th>Seizoensgem.</th>
-              <th>Ontwikkeling</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in progress_rows %}
-              <tr>
-                <td class="mono">{{ row.distance_m }}m</td>
-                <td class="mono"><a href="/races/{{ row.first_race_id }}">{{ fmt_ms(row.first_ms) }}</a></td>
-                <td class="mono"><a href="/races/{{ row.latest_race_id }}">{{ fmt_ms(row.latest_ms) }}</a></td>
-                <td class="mono">
-                  <span class="{% if row.improvement_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
-                    {% if row.improvement_ms > 0 %}+{% endif %}{{ fmt_ms(row.improvement_ms) }}
-                  </span>
-                </td>
-                <td class="mono">{{ fmt_ms(row.last5_avg_ms) if row.last5_avg_ms is not none else "-" }}</td>
-                <td class="mono">{{ fmt_ms(row.season_avg_ms) if row.season_avg_ms is not none else "-" }}</td>
-                <td>
-                  <span class="{% if row.trend == 'verbeterend' %}delta-good{% elif row.trend == 'verslechterend' %}delta-bad{% endif %}">
-                    {{ row.trend }}
-                  </span>
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% endif %}
-  </section>
+        form.querySelectorAll("select").forEach((select) => {
+          select.addEventListener("change", () => {
+            updateStatsContent(new URLSearchParams(new FormData(form)));
+          });
+        });
 
-  <section class="card">
-    <h2>Leuke Statistieken</h2>
-    <div class="form">
-      <p>
-        {% if fun_stats.fastest_lap %}
-          Je snelste ronde ooit was <span class="mono delta-good">{{ fmt_ms(fun_stats.fastest_lap.time_ms) }}</span>
-          op de {{ fun_stats.fastest_lap.distance_m }}m in {{ fun_stats.fastest_lap.venue }}.
-        {% else %}
-          Er zijn nog geen rondetijden om een snelste ronde te bepalen.
-        {% endif %}
-      </p>
-      <p>
-        {% if fun_stats.fastest_opener %}
-          Je snelste opening staat op <span class="mono delta-good">{{ fmt_ms(fun_stats.fastest_opener.time_ms) }}</span>
-          ({{ fun_stats.fastest_opener.distance_m }}m, {{ fun_stats.fastest_opener.venue }}).
-        {% else %}
-          Er zijn nog geen openingen beschikbaar.
-        {% endif %}
-      </p>
-      <p>
-        {% if fun_stats.busiest_month %}
-          Je drukste maand was {{ fun_stats.busiest_month.month }}, met
-          <span class="mono">{{ fun_stats.busiest_month.count }}</span> ritten.
-        {% else %}
-          Er is nog niet genoeg data om een drukste maand te tonen.
-        {% endif %}
-      </p>
-      <p>
-        {% if fun_stats.most_skated_distance %}
-          Je meest gereden afstand is de
-          <span class="mono">{{ fun_stats.most_skated_distance.distance_m }}m</span>,
-          in totaal {{ fun_stats.most_skated_distance.count }} keer.
-        {% else %}
-          Er is nog geen meest gereden afstand beschikbaar.
-        {% endif %}
-      </p>
-      <p>
-        {% if fun_stats.closest_pb_miss %}
-          Je kleinste PB-misser was
-          <span class="mono delta-bad">{{ fmt_ms(fun_stats.closest_pb_miss.delta_ms) }}</span>
-          op de {{ fun_stats.closest_pb_miss.distance_m }}m in {{ fun_stats.closest_pb_miss.venue }}.
-        {% else %}
-          Er is nog geen PB-misser gevonden.
-        {% endif %}
-      </p>
-    </div>
-  </section>
+        const resetLink = form.querySelector("a[href='/stats']");
+        if (resetLink) {
+          resetLink.addEventListener("click", (event) => {
+            event.preventDefault();
+            updateStatsContent(new URLSearchParams());
+          });
+        }
+      }
+
+      bindStatsFilters(document);
+    })();
+  </script>
 {% endblock %}
-

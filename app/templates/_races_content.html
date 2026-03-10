@@ -1,0 +1,118 @@
+<div id="races-content">
+  {% if error_message %}
+    <section class="card">
+      <div class="hint hint-warning">{{ error_message }}</div>
+    </section>
+  {% endif %}
+
+  <section class="card" id="race-filters-panel" {% if not filters_open %}hidden{% endif %}>
+    <form method="get" action="/races" class="form" id="race-filter-form">
+      <div class="grid2">
+        <label>Afstand
+          <select name="distance_m">
+            <option value="">Alle afstanden</option>
+            {% for d in [100, 300, 500, 1000, 1500, 3000, 5000, 10000] %}
+              <option value="{{ d }}" {% if selected_distance == (d|string) %}selected{% endif %}>{{ d }}m</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>Tag
+          <select name="tag_key">
+            <option value="">Alle tags</option>
+            {% for tag in tag_options %}
+              <option value="{{ tag.key }}" {% if selected_tag == tag.key %}selected{% endif %}>{{ tag.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div class="grid2">
+        <label>Baan / Lane
+          <select name="lane">
+            <option value="">Alle banen</option>
+            {% for lane_row in lane_options %}
+              <option value="{{ lane_row.lane }}" {% if selected_lane == lane_row.lane %}selected{% endif %}>{{ lane_row.lane }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <label>Locatie
+        <select name="venue">
+          <option value="">Alle locaties</option>
+          {% for venue_row in venue_options %}
+            <option value="{{ venue_row.venue }}" {% if selected_venue == venue_row.venue %}selected{% endif %}>{{ venue_row.venue }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="grid2">
+        <label>Datum vanaf
+          <div class="date-input">
+            <input class="date-input-text" name="date_from" value="{{ selected_date_from|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+            <input class="date-input-picker" type="date" value="{{ selected_date_from }}" tabindex="-1" aria-hidden="true" />
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
+          </div>
+        </label>
+
+        <label>Datum t/m
+          <div class="date-input">
+            <input class="date-input-text" name="date_to" value="{{ selected_date_to|replace('-', '/') }}" placeholder="dd/mm/jjjj" inputmode="numeric" />
+            <input class="date-input-picker" type="date" value="{{ selected_date_to }}" tabindex="-1" aria-hidden="true" />
+            <button class="date-input-trigger" type="button" aria-label="Open kalender"><span class="line-md-icon" style="--icon-url:url('/static/icons/line-md/calendar.svg');" aria-hidden="true"></span></button>
+          </div>
+        </label>
+      </div>
+
+      <div class="row-actions">
+        <button type="submit">Filteren</button>
+        <a class="btn" href="/races" data-reset="true">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    {% if races|length == 0 %}
+      <p>Geen ritten gevonden voor deze filters.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr><th>Datum</th><th>Afstand</th><th>Tijd</th><th>Baan</th><th>Locatie</th><th>Wedstrijd</th></tr>
+        </thead>
+        <tbody>
+          {% for r in races %}
+            <tr data-race-href="/races/{{ r.id }}">
+              <td class="mono">{{ fmt_date(r.competition_date) }}</td>
+              <td class="mono"><a href="/races/{{ r.id }}">{{ r.distance_m }}m</a></td>
+              <td class="mono">
+                {{ fmt_ms(r.total_time_ms) }}{% if r.dnf == 1 %} (DNF){% endif %}
+                {% if r.is_pr %}
+                  <span class="badge-pr">PR</span>
+                {% endif %}
+                {% if r.tag %}<span class="race-tag race-tag-{{ r.tag.css }}">{{ r.tag.label }}</span>{% endif %}
+              </td>
+              <td>
+                {% set lane_value = r.lane or "" %}
+                {% set lane_norm = lane_value|lower %}
+                {% if lane_value %}
+                  {% if "binnen" in lane_norm %}
+                    <span class="lane-dot lane-dot-indoor" aria-label="Binnenbaan" title="Binnenbaan"></span>
+                  {% elif "buiten" in lane_norm %}
+                    <span class="lane-dot lane-dot-outdoor" aria-label="Buitenbaan" title="Buitenbaan"></span>
+                  {% else %}
+                    <span class="lane-dot lane-dot-unknown" aria-label="{{ r.lane }}" title="{{ r.lane }}"></span>
+                  {% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+              <td>{{ r.venue or "-" }}</td>
+              <td><a href="/competitions/{{ r.competition_id }}">{{ r.competition_name }}</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+</div>

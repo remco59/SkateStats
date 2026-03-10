@@ -1,0 +1,119 @@
+<div id="notification-center-root">
+  <section class="card notification-center-card">
+    <div class="row">
+      <div>
+        <h2>Notificaties</h2>
+        <p class="muted">Nieuwe data, PR's, SB's en reeksen op een plek.</p>
+      </div>
+      <a class="btn btn-secondary" href="/import">Import</a>
+    </div>
+
+    {% if notices %}
+      <div class="notification-list">
+        {% for notice in notices %}
+          <article class="notification-item notification-tone-{{ notice.tone }}">
+            <strong>{{ notice.title }}</strong>
+            <p>{{ notice.text }}</p>
+          </article>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if osta_detection.error_message %}
+      <div class="message message-warning">{{ osta_detection.error_message }}</div>
+    {% endif %}
+
+    <div class="notification-grid">
+      <section class="notification-panel">
+        <h3>Nieuwe data</h3>
+        {% if osta_detection.mode == "off" %}
+          <p class="muted">OSTA-check staat uit in je accountinstellingen.</p>
+        {% elif osta_detection.available|length > 0 %}
+          <p class="muted">Voor {{ osta_detection.search_name }} (seizoen {{ osta_detection.season }}) staan {{ osta_detection.available|length }} nieuwe competities klaar.</p>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr><th>Wedstrijd</th><th>Datum</th><th>Ritten</th><th>Actie</th></tr>
+              </thead>
+              <tbody>
+                {% for item in osta_detection.available %}
+                  <tr>
+                    <td>{{ item.name }}</td>
+                    <td class="mono">{{ fmt_date(item.date) }}</td>
+                    <td class="mono">{{ item.race_count }}</td>
+                    <td>
+                      <form method="post" action="/osta/detection/ignore" class="inline-form">
+                        <input type="hidden" name="comp_signature" value="{{ item.signature }}" />
+                        <input type="hidden" name="comp_name" value="{{ item.name }}" />
+                        <input type="hidden" name="comp_date" value="{{ item.date }}" />
+                        <input type="hidden" name="pid" value="{{ item.pid }}" />
+                        <input type="hidden" name="race_count" value="{{ item.race_count }}" />
+                        <button type="submit" class="btn-secondary">Negeer</button>
+                      </form>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="row-actions">
+            <form method="post" action="/osta/detection/import" class="inline-form">
+              <button type="submit">Importeer alles</button>
+            </form>
+          </div>
+        {% else %}
+          <p class="muted">Geen nieuwe OSTA-data beschikbaar.</p>
+        {% endif %}
+      </section>
+
+      <section class="notification-panel">
+        <h3>Nieuwe PR's</h3>
+        {% if recent_prs %}
+          <div class="notification-list">
+            {% for race in recent_prs %}
+              <article class="notification-item notification-tone-success">
+                <strong><a href="/races/{{ race.id }}">{{ race.distance_m }}m in {{ race.competition_name }}</a></strong>
+                <p>{{ fmt_ms(race.total_time_ms) }} op {{ fmt_date(race.competition_date) }}{% if race.tag %} <span class="race-tag race-tag-{{ race.tag.css }}">{{ race.tag.label }}</span>{% endif %}</p>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">Geen PR's in de laatste 30 dagen.</p>
+        {% endif %}
+      </section>
+
+      <section class="notification-panel">
+        <h3>Nieuwe SB's</h3>
+        {% if recent_sbs %}
+          <div class="notification-list">
+            {% for race in recent_sbs %}
+              <article class="notification-item notification-tone-neutral">
+                <strong><a href="/races/{{ race.id }}">{{ race.distance_m }}m in {{ race.competition_name }}</a></strong>
+                <p>{{ fmt_ms(race.total_time_ms) }} op {{ fmt_date(race.competition_date) }}</p>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">Geen SB's in de laatste 30 dagen.</p>
+        {% endif %}
+      </section>
+
+      <section class="notification-panel">
+        <h3>Reeksen</h3>
+        {% if streak_count >= 2 %}
+          <article class="notification-item notification-tone-highlight">
+            <strong>{{ streak_count }} ritten op rij met een PR of SB</strong>
+            <p>Je laatste reeks bevat vormmomenten op deze ritten:</p>
+            <p class="muted">
+              {% for race in streak_items %}
+                <a href="/races/{{ race.id }}">{{ race.distance_m }}m {{ fmt_date(race.competition_date) }}</a>{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </p>
+          </article>
+        {% else %}
+          <p class="muted">Nog geen actieve PR/SB-reeks. Zodra je meerdere toppers achter elkaar rijdt, verschijnt die hier.</p>
+        {% endif %}
+      </section>
+    </div>
+  </section>
+</div>

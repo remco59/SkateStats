@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import io
 import json
+import random
 import os
 import re
 import secrets
@@ -11,6 +12,7 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timedelta
 from html import escape
+from math import ceil
 from statistics import mean, median, pstdev
 from typing import List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -37,8 +39,24 @@ PASSWORD_HASH_ITERATIONS = 600_000
 SSR_API_BASE = "https://speedskatingresults.com/api/json"
 SSR_XML_API_BASE = "https://speedskatingresults.com/api/xml"
 SSR_DISTANCES = (100, 300, 500, 1000, 1500, 3000, 5000, 10000)
+RACE_TAGS = (
+    ("training", "Training", "training"),
+    ("test", "Test", "test"),
+    ("important", "Belangrijk", "important"),
+    ("outdoor", "Buitenijs", "outdoor"),
+    ("bad_ice", "Slecht ijs", "bad-ice"),
+    ("sick", "Ziek", "sick"),
+    ("injured", "Geblesseerd", "injured"),
+    ("fallen", "Gevallen", "fallen"),
+)
+RACE_TAG_META = {
+    key: {"key": key, "label": label, "css": css}
+    for key, label, css in RACE_TAGS
+}
 OSTA_BASE = "https://www.osta.nl/"
 URL_LINE_RE = re.compile(r"^(.*?)(https?://\S+)\s*$")
+OSTA_PID_QUERY_RE = re.compile(r"(?i)(?:[?&]|\b)pid=([a-z0-9_-]+)")
+OSTA_PID_LEGACY_RE = re.compile(r"(?i)\bosta(?:\s+sync\s+via)?\s+pid\s+([a-z0-9_-]+)")
 SOURCE_NOTE_RE = re.compile(r"^(Geïmporteerd van|Geimporteerd van|Rondetijden van)\s+(.+?):\s*(https?://\S+)\s*$")
 OSTA_VENUE_MAP = {
     "AK": "Alkmaar (NED)",
@@ -47,6 +65,7 @@ OSTA_VENUE_MAP = {
     "BR": "Breda (NED)",
     "DN": "Dronten (NED)",
     "DV": "Deventer (NED)",
+    "DT": "Deventer (NED)",
     "EN": "Enschede (NED)",
     "EV": "Eindhoven (NED)",
     "GR": "Groningen (NED)",
@@ -248,6 +267,7 @@ def init_db() -> None:
               skater_id INTEGER NOT NULL UNIQUE,
               is_admin INTEGER NOT NULL DEFAULT 0,
               theme_preference TEXT NOT NULL DEFAULT 'dark',
+              motion_preference TEXT NOT NULL DEFAULT 'all',
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               last_login_at TEXT,
@@ -261,6 +281,7 @@ def init_db() -> None:
               distance_m INTEGER NOT NULL,
               category TEXT,
               class_name TEXT,
+              tag_key TEXT,
               lane TEXT,
               opponent TEXT,
               total_time_ms INTEGER,
@@ -292,6 +313,7 @@ def init_db() -> None:
               user_id INTEGER PRIMARY KEY,
               search_name TEXT NOT NULL,
               pid TEXT NOT NULL DEFAULT '',
+              mode TEXT NOT NULL DEFAULT 'notify',
               season TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
@@ -339,6 +361,16 @@ def migrate_db(conn: sqlite3.Connection) -> None:
     user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(user)").fetchall()}
     if user_columns and "theme_preference" not in user_columns:
         conn.execute("ALTER TABLE user ADD COLUMN theme_preference TEXT NOT NULL DEFAULT 'dark'")
+    if user_columns and "motion_preference" not in user_columns:
+        conn.execute("ALTER TABLE user ADD COLUMN motion_preference TEXT NOT NULL DEFAULT 'all'")
+
+    osta_monitor_columns = {row["name"] for row in conn.execute("PRAGMA table_info(osta_monitor_config)").fetchall()}
+    if osta_monitor_columns and "mode" not in osta_monitor_columns:
+        conn.execute("ALTER TABLE osta_monitor_config ADD COLUMN mode TEXT NOT NULL DEFAULT 'notify'")
+
+    race_columns = {row["name"] for row in conn.execute("PRAGMA table_info(race)").fetchall()}
+    if race_columns and "tag_key" not in race_columns:
+        conn.execute("ALTER TABLE race ADD COLUMN tag_key TEXT")
 
     goal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(goal_target)").fetchall()}
     if goal_columns and "notes" not in goal_columns:
@@ -350,6 +382,7 @@ def migrate_db(conn: sqlite3.Connection) -> None:
           user_id INTEGER PRIMARY KEY,
           search_name TEXT NOT NULL,
           pid TEXT NOT NULL DEFAULT '',
+          mode TEXT NOT NULL DEFAULT 'notify',
           season TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
@@ -514,6 +547,20 @@ def normalize_theme_preference(raw_value: str) -> str:
     return "dark"
 
 
+def normalize_motion_preference(raw_value: str) -> str:
+    value = (raw_value or "").strip().lower()
+    if value in {"background", "cards", "none"}:
+        return value
+    return "all"
+
+
+def normalize_osta_monitor_mode(raw_value: str) -> str:
+    value = (raw_value or "").strip().lower()
+    if value in {"off", "auto"}:
+        return value
+    return "notify"
+
+
 def resolved_theme(theme_preference: str) -> str:
     return "dark" if normalize_theme_preference(theme_preference) == "system" else normalize_theme_preference(theme_preference)
 
@@ -524,10 +571,12 @@ def update_user_profile(
     username: str,
     skater_name: str,
     theme_preference: str,
+    motion_preference: str,
 ) -> tuple[bool, str]:
     username_value = username.strip()
     skater_name_value = skater_name.strip()
     theme_value = normalize_theme_preference(theme_preference)
+    motion_value = normalize_motion_preference(motion_preference)
 
     if not username_value or not skater_name_value:
         return False, "required"
@@ -547,10 +596,10 @@ def update_user_profile(
     conn.execute(
         """
         UPDATE user
-        SET username = ?, theme_preference = ?, updated_at = ?
+        SET username = ?, theme_preference = ?, motion_preference = ?, updated_at = ?
         WHERE id = ?
         """,
-        (username_value, theme_value, now_iso(), user_id),
+        (username_value, theme_value, motion_value, now_iso(), user_id),
     )
     conn.execute(
         "UPDATE skater SET name = ? WHERE id = ?",
@@ -602,6 +651,22 @@ def render(request: Request, template_name: str, **ctx) -> HTMLResponse:
         owner_name=current_user["skater_name"] if current_user else OWNER_NAME,
         theme_preference=normalize_theme_preference(current_user["theme_preference"]) if current_user else "dark",
         active_theme=resolved_theme(current_user["theme_preference"]) if current_user else "dark",
+        motion_preference=normalize_motion_preference(current_user["motion_preference"]) if current_user else "all",
+        **ctx,
+    )
+    return HTMLResponse(html)
+
+
+def render_fragment(request: Request, template_name: str, **ctx) -> HTMLResponse:
+    tpl = templates_env.get_template(template_name)
+    current_user = getattr(request.state, "user", None)
+    html = tpl.render(
+        request=request,
+        current_user=current_user,
+        owner_name=current_user["skater_name"] if current_user else OWNER_NAME,
+        theme_preference=normalize_theme_preference(current_user["theme_preference"]) if current_user else "dark",
+        active_theme=resolved_theme(current_user["theme_preference"]) if current_user else "dark",
+        motion_preference=normalize_motion_preference(current_user["motion_preference"]) if current_user else "all",
         **ctx,
     )
     return HTMLResponse(html)
@@ -719,6 +784,7 @@ def build_sparkline(
         11: "nov",
         12: "dec",
     }
+    show_year_ticks = not range_start and not range_end
     valid_rows = [row for row in rows if row["total_time_ms"] is not None]
     values = [row["total_time_ms"] for row in valid_rows]
     if not values:
@@ -757,20 +823,29 @@ def build_sparkline(
     min_tick_spacing_px = 28
     last_tick_x: Optional[float] = None
     seen_months: set[tuple[int, int]] = set()
+    seen_years: set[int] = set()
     for row in valid_rows:
         race_date = datetime.strptime(row["competition_date"], "%Y-%m-%d").date()
-        month_key = (race_date.year, race_date.month)
-        if month_key in seen_months:
-            continue
-        seen_months.add(month_key)
-        tick_date = race_date.replace(day=1)
+        if show_year_ticks:
+            if race_date.year in seen_years:
+                continue
+            seen_years.add(race_date.year)
+            tick_date = race_date.replace(month=1, day=1)
+            tick_label = str(race_date.year)
+        else:
+            month_key = (race_date.year, race_date.month)
+            if month_key in seen_months:
+                continue
+            seen_months.add(month_key)
+            tick_date = race_date.replace(day=1)
+            tick_label = month_labels[race_date.month]
         tick_offset = min(max((tick_date - start_date).days, 0), day_span)
         x_ratio = tick_offset / day_span
         x = left_padding + (x_ratio * plot_width)
         if last_tick_x is not None and (x - last_tick_x) < min_tick_spacing_px:
             continue
         last_tick_x = x
-        month_ticks.append({"x": f"{x:.1f}", "label": month_labels[race_date.month]})
+        month_ticks.append({"x": f"{x:.1f}", "label": tick_label})
 
     for row in valid_rows:
         value = row["total_time_ms"]
@@ -787,7 +862,6 @@ def build_sparkline(
                 "tooltip_date": fmt_date_ymd_to_dmy(row["competition_date"]),
                 "tooltip_name": row["competition_name"],
                 "tooltip_time": fmt_ms(value),
-                "tooltip_count": str(len(valid_rows)),
             }
         )
 
@@ -988,7 +1062,8 @@ def compute_race_metrics(laps: List[float], distance_m: int) -> dict:
             "avg_fade_per_segment_400eq": None,
         }
 
-    avg_400 = sum(p400) / len(p400)
+    round_segments = p400[1:] if len(p400) > 1 else []
+    avg_400 = (sum(round_segments) / len(round_segments)) if round_segments else None
     first = p400[0]
     last = p400[-1]
     fade = last - first
@@ -1011,11 +1086,339 @@ def fmt_sec(value: Optional[float]) -> str:
     return fmt_ms(int(round(value * 1000)))
 
 
+def format_month_label_nl(month_key: Optional[str]) -> str:
+    if not month_key:
+        return "-"
+    try:
+        parsed = datetime.strptime(month_key, "%Y-%m")
+    except ValueError:
+        return month_key
+    month_name = next((name for name, month_no in MONTHS_NL.items() if month_no == parsed.month), str(parsed.month))
+    return f"{month_name} {parsed.year}"
+
+
+def story_text(text: str, tone: str = "neutral") -> dict:
+    return {"text": text, "tone": tone}
+
+
+def story_link(text: str, race_id: Optional[int], tone: str = "neutral") -> dict:
+    part = {"text": text, "tone": tone}
+    if race_id is not None:
+        part["href"] = f"/races/{race_id}"
+    return part
+
+
 def parse_optional_time_to_ms(raw_value: str) -> Optional[int]:
     value = (raw_value or "").strip()
     if not value:
         return None
     return parse_time_to_ms(value)
+
+
+def normalize_race_tag(raw_value: str) -> Optional[str]:
+    key = (raw_value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not key:
+        return None
+    return key if key in RACE_TAG_META else None
+
+
+def race_tag_badge(tag_key: Optional[str]) -> Optional[dict]:
+    normalized = normalize_race_tag(tag_key or "")
+    if not normalized:
+        return None
+    return dict(RACE_TAG_META[normalized])
+
+
+def annotate_race_tags(rows: List[sqlite3.Row | dict]) -> list[dict]:
+    annotated: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["tag"] = race_tag_badge(item.get("tag_key"))
+        annotated.append(item)
+    return annotated
+
+
+def build_target_generator_profiles(rows: List[sqlite3.Row]) -> dict[int, dict]:
+    grouped: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        if row["distance_m"] is None or row["total_time_ms"] is None or row["dnf"] == 1:
+            continue
+        if not laps_from_csv(row["laps_csv"]):
+            continue
+        grouped.setdefault(int(row["distance_m"]), []).append(row)
+
+    profiles: dict[int, dict] = {}
+    for distance, distance_rows in grouped.items():
+        recent_rows = distance_rows[-6:]
+        opening_ratios: list[float] = []
+        last_400_ratios: list[float] = []
+        fade_ratios: list[float] = []
+        for row in recent_rows:
+            total_ms = int(row["total_time_ms"])
+            laps = laps_from_csv(row["laps_csv"])
+            metrics = compute_race_metrics(laps, distance)
+            if not laps or total_ms <= 0:
+                continue
+            opening_ratios.append(int(round(laps[0] * 1000)) / total_ms)
+            if metrics["last_400eq"] is not None:
+                last_400_ratios.append((metrics["last_400eq"] * 1000.0) / total_ms)
+            if metrics["fade_400eq"] is not None and metrics["avg_400"] not in (None, 0):
+                fade_ratios.append(metrics["fade_400eq"] / metrics["avg_400"])
+        profiles[distance] = {
+            "sample_size": len(recent_rows),
+            "opening_ratio": mean(opening_ratios) if opening_ratios else None,
+            "last_400_ratio": mean(last_400_ratios) if last_400_ratios else None,
+            "fade_ratio": mean(fade_ratios) if fade_ratios else None,
+        }
+    return profiles
+
+
+def generate_split_targets(distance_m: int, target_time_ms: Optional[int], profile: Optional[dict]) -> dict:
+    if target_time_ms is None or target_time_ms <= 0:
+        return {
+            "target_opening_ms": None,
+            "target_avg_400_ms": None,
+            "target_last_400_ms": None,
+            "target_fade_400_ms": None,
+        }
+
+    opening_defaults = {
+        100: 1.0,
+        300: 0.34,
+        500: 0.275,
+        1000: 0.275,
+        1500: 0.19,
+        3000: 0.105,
+        5000: 0.066,
+        10000: 0.034,
+    }
+    last_400_defaults = {
+        100: 1.0,
+        300: 1.0,
+        500: 0.73,
+        1000: 0.41,
+        1500: 0.285,
+        3000: 0.145,
+        5000: 0.088,
+        10000: 0.045,
+    }
+    fade_defaults = {
+        100: 0.0,
+        300: 0.02,
+        500: 0.05,
+        1000: 0.08,
+        1500: 0.09,
+        3000: 0.11,
+        5000: 0.12,
+        10000: 0.13,
+    }
+
+    opening_ratio = (profile or {}).get("opening_ratio")
+    last_400_ratio = (profile or {}).get("last_400_ratio")
+    fade_ratio = (profile or {}).get("fade_ratio")
+    target_opening_ms = int(round(target_time_ms * (opening_ratio if opening_ratio is not None else opening_defaults.get(distance_m, 0.18))))
+    remaining_distance_m = max(distance_m - opening_split_m(distance_m), 0)
+    remaining_time_ms = max(target_time_ms - target_opening_ms, 0)
+    avg_400_ms = int(round((remaining_time_ms * 400) / remaining_distance_m)) if remaining_distance_m > 0 else None
+    target_last_400_ms = int(round(target_time_ms * (last_400_ratio if last_400_ratio is not None else last_400_defaults.get(distance_m, 0.2))))
+    target_fade_400_ms = int(round((avg_400_ms or 0) * (fade_ratio if fade_ratio is not None else fade_defaults.get(distance_m, 0.08)))) if avg_400_ms is not None else None
+    return {
+        "target_opening_ms": target_opening_ms,
+        "target_avg_400_ms": avg_400_ms,
+        "target_last_400_ms": target_last_400_ms,
+        "target_fade_400_ms": target_fade_400_ms,
+    }
+
+
+def build_target_forecast(goal_row: Optional[sqlite3.Row], distance_rows: List[sqlite3.Row]) -> dict:
+    target_time_ms = int(goal_row["target_time_ms"]) if goal_row and goal_row["target_time_ms"] is not None else None
+    timed_rows = [
+        row
+        for row in distance_rows
+        if row["total_time_ms"] is not None and row["dnf"] != 1
+    ]
+    if target_time_ms is None:
+        return {"status": "no_target"}
+    if not timed_rows:
+        return {"status": "no_data", "target_time_ms": target_time_ms}
+
+    best_row = min(timed_rows, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
+    best_time_ms = int(best_row["total_time_ms"])
+    gap_ms = best_time_ms - target_time_ms
+    if gap_ms <= 0:
+        return {
+            "status": "reached",
+            "target_time_ms": target_time_ms,
+            "best_time_ms": best_time_ms,
+            "delta_ms": gap_ms,
+            "best_race_id": int(best_row["id"]),
+        }
+
+    recent_rows = timed_rows[-5:]
+    if len(recent_rows) < 3:
+        return {
+            "status": "insufficient",
+            "target_time_ms": target_time_ms,
+            "best_time_ms": best_time_ms,
+            "delta_ms": gap_ms,
+        }
+
+    oldest_ms = int(recent_rows[0]["total_time_ms"])
+    latest_ms = int(recent_rows[-1]["total_time_ms"])
+    improvement_total_ms = oldest_ms - latest_ms
+    races_span = len(recent_rows) - 1
+    improvement_per_race_ms = improvement_total_ms / races_span if races_span > 0 else 0.0
+    if improvement_per_race_ms <= 0:
+        return {
+            "status": "flat",
+            "target_time_ms": target_time_ms,
+            "best_time_ms": best_time_ms,
+            "delta_ms": gap_ms,
+            "improvement_per_race_ms": improvement_per_race_ms,
+        }
+
+    races_to_target = max(1, int(ceil(gap_ms / improvement_per_race_ms)))
+    latest_date = extract_date_from_text(str(recent_rows[-1]["competition_date"] or ""))
+    eta_date = None
+    if latest_date:
+        eta_base = datetime.strptime(latest_date, "%Y-%m-%d").date()
+        eta_date = (eta_base + timedelta(days=races_to_target * 14)).strftime("%Y-%m-%d")
+
+    return {
+        "status": "forecast",
+        "target_time_ms": target_time_ms,
+        "best_time_ms": best_time_ms,
+        "delta_ms": gap_ms,
+        "improvement_per_race_ms": int(round(improvement_per_race_ms)),
+        "races_to_target": races_to_target,
+        "eta_date": eta_date,
+    }
+
+
+def build_target_page_context(conn: sqlite3.Connection, current_user: sqlite3.Row) -> dict:
+    race_rows = conn.execute(
+        """
+        SELECT r.id, r.competition_id, r.distance_m, r.total_time_ms, r.laps_csv, r.dnf, r.tag_key,
+               c.name AS competition_name, c.competition_date, c.venue
+        FROM race r
+        JOIN competition c ON c.id = r.competition_id
+        WHERE r.skater_id = ? AND c.owner_user_id = ?
+        ORDER BY c.competition_date ASC, r.id ASC
+        """,
+        (int(current_user["skater_id"]), int(current_user["id"])),
+    ).fetchall()
+    goals = get_goal_targets(conn, int(current_user["id"]))
+    goal_map = get_goal_target_map(conn, int(current_user["id"]))
+    pr_race_ids = collect_pr_race_ids(race_rows)
+    distance_stats = build_distance_stats(race_rows, pr_race_ids)
+    stats_map = {int(item["distance_m"]): item for item in distance_stats}
+    by_distance: dict[int, list[sqlite3.Row]] = {}
+    for row in race_rows:
+        if row["distance_m"] is not None:
+            by_distance.setdefault(int(row["distance_m"]), []).append(row)
+
+    generator_profiles = build_target_generator_profiles(race_rows)
+    target_cards: list[dict] = []
+    for distance in SSR_DISTANCES:
+        goal_row = goal_map.get(distance)
+        stat = stats_map.get(distance)
+        forecast = build_target_forecast(goal_row, by_distance.get(distance, []))
+        progress = build_goal_progress(goal_row, stat or {})
+        target_cards.append(
+            {
+                "distance_m": distance,
+                "goal": dict(goal_row) if goal_row is not None else None,
+                "stat": stat,
+                "progress_rows": progress,
+                "forecast": forecast,
+                "generator_profile": generator_profiles.get(distance, {}),
+            }
+        )
+
+    return {
+        "targets": goals,
+        "target_cards": target_cards,
+        "distances": SSR_DISTANCES,
+        "generator_profiles_json": json.dumps(generator_profiles),
+    }
+
+
+def build_notification_center_context(
+    conn: sqlite3.Connection,
+    current_user: sqlite3.Row,
+    all_races: List[sqlite3.Row],
+    osta_notice: str = "",
+    osta_count: int = 0,
+) -> dict:
+    osta_detection = detect_osta_updates_for_user(conn, current_user)
+    pr_progress = build_pr_progress(all_races)
+    timed_rows = [row for row in all_races if row["total_time_ms"] is not None and row["dnf"] != 1]
+    sorted_rows = sorted(timed_rows, key=lambda row: (row["competition_date"] or "", int(row["id"])))
+
+    sb_race_ids: set[int] = set()
+    sb_best_by_key: dict[tuple[str, int], int] = {}
+    for row in sorted_rows:
+        season_label = season_label_for_date(row["competition_date"])
+        key = (season_label, int(row["distance_m"]))
+        total_ms = int(row["total_time_ms"])
+        best_value = sb_best_by_key.get(key)
+        if best_value is None or total_ms < best_value:
+            sb_best_by_key[key] = total_ms
+            sb_race_ids.add(int(row["id"]))
+
+    recent_cutoff = (datetime.now().date() - timedelta(days=30)).strftime("%Y-%m-%d")
+    recent_prs = []
+    recent_sbs = []
+    for row in reversed(sorted_rows):
+        row_dict = dict(row)
+        row_dict["tag"] = race_tag_badge(row_dict.get("tag_key"))
+        race_id = int(row["id"])
+        if row["competition_date"] >= recent_cutoff and pr_progress.get(race_id, {}).get("is_pr"):
+            recent_prs.append(row_dict)
+        if row["competition_date"] >= recent_cutoff and race_id in sb_race_ids:
+            recent_sbs.append(row_dict)
+
+    streak_count = 0
+    streak_items: list[dict] = []
+    for row in reversed(sorted_rows):
+        race_id = int(row["id"])
+        is_hit = pr_progress.get(race_id, {}).get("is_pr") or race_id in sb_race_ids
+        if not is_hit:
+            break
+        streak_count += 1
+        streak_items.append(dict(row))
+
+    notices: list[dict] = []
+    notice_key = (osta_notice or "").strip()
+    if notice_key == "imported":
+        notices.append({"tone": "success", "title": "Nieuwe data geimporteerd", "text": f"{osta_count} ritten toegevoegd vanuit OSTA."})
+    elif notice_key == "ignored":
+        notices.append({"tone": "neutral", "title": "Melding weggewerkt", "text": "Deze OSTA-competitie wordt niet opnieuw voorgesteld."})
+    elif notice_key == "nonew":
+        notices.append({"tone": "neutral", "title": "Geen nieuwe data", "text": "Er is op dit moment geen nieuwe OSTA-data om te importeren."})
+    elif notice_key in {"ignore_error", "import_error"}:
+        notices.append({"tone": "warning", "title": "Actie mislukt", "text": "De OSTA-actie is mislukt. Probeer het opnieuw via de notificaties of importpagina."})
+
+    auto_import_summary = osta_detection.get("auto_import_summary") or {}
+    auto_imported_races = int(auto_import_summary.get("imported_races") or 0)
+    auto_imported_competitions = int(auto_import_summary.get("imported_competitions") or 0)
+    if auto_imported_races > 0 or auto_imported_competitions > 0:
+        notices.append(
+            {
+                "tone": "success",
+                "title": "OSTA automatisch geimporteerd",
+                "text": f"{auto_imported_competitions} wedstrijden en {auto_imported_races} ritten toegevoegd.",
+            }
+        )
+
+    return {
+        "notices": notices,
+        "osta_detection": osta_detection,
+        "recent_prs": recent_prs[:5],
+        "recent_sbs": recent_sbs[:5],
+        "streak_count": streak_count,
+        "streak_items": streak_items[:5],
+    }
 
 
 def get_goal_targets(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
@@ -1099,8 +1502,8 @@ def build_goal_progress(goal_row: Optional[sqlite3.Row], stat: dict) -> list[dic
     comparisons = [
         ("Doeltijd", goal_row["target_time_ms"], stat.get("best_time_ms")),
         ("Opening", goal_row["target_opening_ms"], round(stat["best_opening_s"] * 1000) if stat.get("best_opening_s") is not None else None),
-        ("Gem. 400-eq", goal_row["target_avg_400_ms"], round(stat["avg_400_s"] * 1000) if stat.get("avg_400_s") is not None else None),
-        ("Laatste 400-eq", goal_row["target_last_400_ms"], round(stat["best_last_400_s"] * 1000) if stat.get("best_last_400_s") is not None else None),
+        ("Gem. ronde", goal_row["target_avg_400_ms"], round(stat["avg_400_s"] * 1000) if stat.get("avg_400_s") is not None else None),
+        ("Laatste ronde", goal_row["target_last_400_ms"], round(stat["best_last_400_s"] * 1000) if stat.get("best_last_400_s") is not None else None),
         ("Verval", goal_row["target_fade_400_ms"], round(stat["avg_fade_s"] * 1000) if stat.get("avg_fade_s") is not None else None),
     ]
 
@@ -1108,14 +1511,19 @@ def build_goal_progress(goal_row: Optional[sqlite3.Row], stat: dict) -> list[dic
     for label, target_ms, actual_ms in comparisons:
         if target_ms is None:
             continue
-        delta_ms = None if actual_ms is None else int(actual_ms) - int(target_ms)
+        if label == "Verval":
+            delta_ms = None if actual_ms is None else abs(int(actual_ms)) - abs(int(target_ms))
+            met_goal = delta_ms is not None and delta_ms <= 0
+        else:
+            delta_ms = None if actual_ms is None else int(actual_ms) - int(target_ms)
+            met_goal = delta_ms is not None and delta_ms <= 0
         progress.append(
             {
                 "label": label,
                 "target_ms": target_ms,
                 "actual_ms": actual_ms,
                 "delta_ms": delta_ms,
-                "met_goal": delta_ms is not None and delta_ms <= 0,
+                "met_goal": met_goal,
             }
         )
     return progress
@@ -1507,10 +1915,21 @@ def export_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row) -> dic
         "username": current_user["username"],
         "skater_name": current_user["skater_name"],
         "theme_preference": current_user["theme_preference"],
+        "motion_preference": current_user["motion_preference"],
         "created_at": current_user["created_at"],
         "updated_at": current_user["updated_at"],
         "last_login_at": current_user["last_login_at"],
     }
+    monitor_config = get_osta_monitor_config(conn, int(current_user["id"]))
+    monitor_payload = None
+    if monitor_config:
+        monitor_payload = {
+            "search_name": monitor_config["search_name"],
+            "pid": monitor_config["pid"],
+            "mode": normalize_osta_monitor_mode(monitor_config["mode"] or "notify"),
+            "season": monitor_config["season"],
+            "updated_at": monitor_config["updated_at"],
+        }
 
     competitions = [
         dict(row)
@@ -1541,6 +1960,7 @@ def export_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row) -> dic
     return {
         "exported_at": now_iso(),
         "user": user_payload,
+        "osta_monitor": monitor_payload,
         "goals": goals,
         "competitions": competitions,
         "races": races,
@@ -1555,18 +1975,30 @@ def import_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row, payloa
     races = payload.get("races")
     goals = payload.get("goals", [])
     user_payload = payload.get("user", {})
+    monitor_payload = payload.get("osta_monitor")
 
     if not isinstance(competitions, list) or not isinstance(races, list) or not isinstance(goals, list):
-        raise ValueError("Backup mist competities, ritten of doelen.")
+        raise ValueError("Backup mist competities, ritten of targets.")
 
     conn.execute("DELETE FROM goal_target WHERE user_id = ?", (int(current_user["id"]),))
     conn.execute("DELETE FROM competition WHERE owner_user_id = ?", (int(current_user["id"]),))
 
     if isinstance(user_payload, dict):
         restored_theme = normalize_theme_preference(str(user_payload.get("theme_preference") or "dark"))
+        restored_motion = normalize_motion_preference(str(user_payload.get("motion_preference") or "all"))
         conn.execute(
-            "UPDATE user SET theme_preference = ?, updated_at = ? WHERE id = ?",
-            (restored_theme, now_iso(), int(current_user["id"])),
+            "UPDATE user SET theme_preference = ?, motion_preference = ?, updated_at = ? WHERE id = ?",
+            (restored_theme, restored_motion, now_iso(), int(current_user["id"])),
+        )
+
+    if isinstance(monitor_payload, dict):
+        upsert_osta_monitor_config(
+            conn,
+            int(current_user["id"]),
+            search_name=str(monitor_payload.get("search_name") or current_user["skater_name"]),
+            season=str(monitor_payload.get("season") or default_ssr_season()),
+            pid=str(monitor_payload.get("pid") or ""),
+            mode=str(monitor_payload.get("mode") or "notify"),
         )
 
     competition_id_map: dict[int, int] = {}
@@ -1605,10 +2037,10 @@ def import_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row, payloa
         conn.execute(
             """
             INSERT INTO race(
-              competition_id, skater_id, distance_m, category, class_name, lane, opponent,
+              competition_id, skater_id, distance_m, category, class_name, tag_key, lane, opponent,
               total_time_ms, laps_csv, dnf, notes, created_at
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 new_competition_id,
@@ -1616,6 +2048,7 @@ def import_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row, payloa
                 int(item.get("distance_m") or 0),
                 item.get("category"),
                 item.get("class_name"),
+                normalize_race_tag(str(item.get("tag_key") or "")),
                 (item.get("lane") or "").strip() or None,
                 (item.get("opponent") or "").strip() or None,
                 int(item["total_time_ms"]) if item.get("total_time_ms") is not None else None,
@@ -1629,7 +2062,7 @@ def import_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row, payloa
 
     for item in goals:
         if not isinstance(item, dict):
-            raise ValueError("Een doel in de backup is ongeldig.")
+            raise ValueError("Een target in de backup is ongeldig.")
         upsert_goal_target(
             conn,
             int(current_user["id"]),
@@ -1653,6 +2086,709 @@ def import_user_data(conn: sqlite3.Connection, current_user: sqlite3.Row, payloa
 def collect_season_labels(rows: List[sqlite3.Row]) -> List[str]:
     labels = {season_label_for_date(row["competition_date"]) for row in rows if row["competition_date"]}
     return sorted(labels, reverse=True)
+
+
+def build_home_trend_context(rows: List[sqlite3.Row], trend_season: str = "", default_to_current: bool = False) -> dict:
+    races_by_distance: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        if row["distance_m"] is None:
+            continue
+        races_by_distance.setdefault(int(row["distance_m"]), []).append(row)
+
+    season_options = collect_season_labels(rows)
+    selected_trend_season = trend_season.strip()
+    current_season = season_label_for_date(datetime.now().strftime("%Y-%m-%d"))
+    if default_to_current and not selected_trend_season and current_season in season_options:
+        selected_trend_season = current_season
+    if selected_trend_season and selected_trend_season not in season_options:
+        selected_trend_season = current_season if current_season in season_options else ""
+
+    filter_start = None
+    filter_end = None
+    if selected_trend_season:
+        filter_start, filter_end = season_bounds_from_label(selected_trend_season)
+
+    trend_rows: list[dict] = []
+    for distance in sorted(races_by_distance):
+        valid_rows = [row for row in races_by_distance[distance] if row["total_time_ms"] is not None and row["dnf"] != 1]
+        if filter_start:
+            valid_rows = [row for row in valid_rows if row["competition_date"] >= filter_start]
+        if filter_end:
+            valid_rows = [row for row in valid_rows if row["competition_date"] <= filter_end]
+        if not valid_rows:
+            continue
+        trend_rows.append(
+            {
+                "distance_m": distance,
+                "count": len(valid_rows),
+                "sparkline": build_sparkline(valid_rows, filter_start, filter_end) if len(valid_rows) > 1 else None,
+                "latest_time": fmt_ms(valid_rows[-1]["total_time_ms"]),
+                "latest_date": fmt_date_ymd_to_dmy(valid_rows[-1]["competition_date"]),
+            }
+        )
+
+    return {
+        "trend_rows": trend_rows,
+        "trend_season_options": season_options,
+        "selected_trend_season": selected_trend_season,
+        "trend_filter_label": (
+            f"{fmt_date_ymd_to_dmy(filter_start)} t/m {fmt_date_ymd_to_dmy(filter_end)}"
+            if filter_start and filter_end
+            else "Alle seizoenen"
+        ),
+    }
+
+
+def build_stats_context(rows: List[sqlite3.Row], season: str = "", distance_m: str = "", default_to_current: bool = False) -> dict:
+    season_options = collect_season_labels(rows)
+    story_variants: list[dict] = []
+    selected_season = season.strip()
+    current_season = season_label_for_date(datetime.now().strftime("%Y-%m-%d"))
+    if default_to_current and not selected_season and current_season in season_options:
+        selected_season = current_season
+    if selected_season and selected_season not in season_options:
+        selected_season = current_season if current_season in season_options else ""
+
+    selected_distance = distance_m.strip()
+    distance_options = sorted({int(row["distance_m"]) for row in rows if row["distance_m"] is not None})
+    filtered_rows = list(rows)
+    if selected_season:
+        season_start, season_end = season_bounds_from_label(selected_season)
+        filtered_rows = [row for row in filtered_rows if season_start <= row["competition_date"] <= season_end]
+    if selected_distance:
+        try:
+            selected_distance_value = int(selected_distance)
+            filtered_rows = [row for row in filtered_rows if int(row["distance_m"]) == selected_distance_value]
+        except ValueError:
+            selected_distance = ""
+
+    timed_rows = [row for row in filtered_rows if row["total_time_ms"] is not None and row["dnf"] != 1 and row["distance_m"]]
+    sorted_timed_rows = sorted(timed_rows, key=lambda row: (row["competition_date"] or "", int(row["id"])))
+
+    pb_race_ids = collect_pr_race_ids(filtered_rows)
+
+    sb_race_ids: set[int] = set()
+    sb_best_by_key: dict[tuple[str, int], int] = {}
+    for row in sorted_timed_rows:
+        season_label = season_label_for_date(row["competition_date"])
+        key = (season_label, int(row["distance_m"]))
+        total_ms = int(row["total_time_ms"])
+        best_value = sb_best_by_key.get(key)
+        if best_value is None or total_ms < best_value:
+            sb_best_by_key[key] = total_ms
+            sb_race_ids.add(int(row["id"]))
+
+    total_distance_km = sum(int(row["distance_m"]) for row in filtered_rows if row["distance_m"] is not None) / 1000.0
+
+    by_distance: dict[int, list[sqlite3.Row]] = {}
+    for row in sorted_timed_rows:
+        by_distance.setdefault(int(row["distance_m"]), []).append(row)
+
+    sb_reference_season = selected_season or current_season
+    average_rows: list[dict] = []
+    split_rows: list[dict] = []
+    distance_overview_rows: list[dict] = []
+    consistency_rows: list[dict] = []
+    progress_rows: list[dict] = []
+
+    for distance in sorted(by_distance):
+        rows_for_distance = by_distance[distance]
+        times = [int(row["total_time_ms"]) for row in rows_for_distance]
+        pb_row = min(rows_for_distance, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
+        pb_ms = int(pb_row["total_time_ms"])
+        season_subset = [row for row in rows_for_distance if season_label_for_date(row["competition_date"]) == sb_reference_season]
+        season_best_row = min(season_subset, key=lambda row: (int(row["total_time_ms"]), int(row["id"]))) if season_subset else None
+        season_best_ms = int(season_best_row["total_time_ms"]) if season_best_row is not None else None
+        avg_ms = int(round(mean(times)))
+        median_ms = int(round(median(times)))
+
+        average_row = {
+            "distance_m": distance,
+            "pb_ms": pb_ms,
+            "pb_race_id": int(pb_row["id"]),
+            "season_best_ms": season_best_ms,
+            "season_best_race_id": int(season_best_row["id"]) if season_best_row is not None else None,
+            "average_ms": avg_ms,
+            "median_ms": median_ms,
+        }
+        average_rows.append(average_row)
+
+        openings: list[float] = []
+        full_laps: list[float] = []
+        fades: list[float] = []
+        lap_values_by_index: dict[int, list[float]] = {}
+        best_opening_s: Optional[float] = None
+        best_opening_race_id: Optional[int] = None
+        best_lap_s: Optional[float] = None
+        best_lap_race_id: Optional[int] = None
+        for row in rows_for_distance:
+            laps = laps_from_csv(row["laps_csv"])
+            if not laps:
+                continue
+            race_id = int(row["id"])
+            openings.append(laps[0])
+            if best_opening_s is None or laps[0] < best_opening_s or (laps[0] == best_opening_s and race_id < (best_opening_race_id or race_id + 1)):
+                best_opening_s = laps[0]
+                best_opening_race_id = race_id
+            if len(laps) > 1:
+                split_laps = laps[1:]
+                full_laps.extend(split_laps)
+                race_best_lap = min(split_laps)
+                if best_lap_s is None or race_best_lap < best_lap_s or (race_best_lap == best_lap_s and race_id < (best_lap_race_id or race_id + 1)):
+                    best_lap_s = race_best_lap
+                    best_lap_race_id = race_id
+                fades.append(split_laps[-1] - min(split_laps))
+                for idx in range(1, len(laps)):
+                    lap_values_by_index.setdefault(idx, []).append(laps[idx])
+
+        split_row = {
+            "distance_m": distance,
+            "avg_opening_s": mean(openings) if openings else None,
+            "best_opening_s": best_opening_s,
+            "best_opening_race_id": best_opening_race_id,
+            "avg_lap_s": mean(full_laps) if full_laps else None,
+            "best_lap_s": best_lap_s,
+            "best_lap_race_id": best_lap_race_id,
+            "avg_fade_s": mean(fades) if fades else None,
+            "lap_averages": [{"lap_no": idx, "avg_s": mean(values)} for idx, values in sorted(lap_values_by_index.items())],
+        }
+        if openings or full_laps:
+            split_rows.append(split_row)
+
+        distance_overview_rows.append({**average_row, **split_row})
+
+        std_ms = int(round(pstdev(times))) if len(times) >= 2 else 0
+        range_ms = max(times) - min(times)
+        consistency_rows.append({"distance_m": distance, "std_dev_ms": std_ms, "range_ms": range_ms})
+
+        first_row = rows_for_distance[0]
+        latest_row = rows_for_distance[-1]
+        last5 = rows_for_distance[-5:]
+        last5_avg_ms = int(round(mean(int(row["total_time_ms"]) for row in last5))) if last5 else None
+        season_avg_ms = int(round(mean(int(row["total_time_ms"]) for row in season_subset))) if season_subset else None
+        trend = "n.v.t."
+        if last5_avg_ms is not None and season_avg_ms is not None:
+            if last5_avg_ms <= season_avg_ms - 200:
+                trend = "verbeterend"
+            elif last5_avg_ms >= season_avg_ms + 200:
+                trend = "verslechterend"
+            else:
+                trend = "stabiel"
+
+        progress_rows.append(
+            {
+                "distance_m": distance,
+                "first_ms": int(first_row["total_time_ms"]),
+                "first_race_id": int(first_row["id"]),
+                "latest_ms": int(latest_row["total_time_ms"]),
+                "latest_race_id": int(latest_row["id"]),
+                "improvement_ms": int(latest_row["total_time_ms"]) - int(first_row["total_time_ms"]),
+                "last5_avg_ms": last5_avg_ms,
+                "season_avg_ms": season_avg_ms,
+                "trend": trend,
+            }
+        )
+
+    track_grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in sorted_timed_rows:
+        venue = (row["venue"] or "").strip()
+        if venue:
+            track_grouped.setdefault(venue, []).append(row)
+
+    track_rows: list[dict] = []
+    all_500eq_values: list[int] = []
+    for venue, venue_rows in track_grouped.items():
+        per_500eq = [int(round((int(row["total_time_ms"]) * 500) / int(row["distance_m"]))) for row in venue_rows if int(row["distance_m"]) > 0]
+        if not per_500eq:
+            continue
+        all_500eq_values.extend(per_500eq)
+        track_rows.append({"track": venue, "race_count": len(venue_rows), "avg_500eq_ms": int(round(mean(per_500eq))), "best_500eq_ms": min(per_500eq)})
+
+    track_rows = sorted(track_rows, key=lambda item: (item["avg_500eq_ms"], item["track"].lower()))
+    overall_500eq_ms = int(round(mean(all_500eq_values))) if all_500eq_values else None
+    best_track_summary = None
+    worst_track_summary = None
+    if overall_500eq_ms is not None and track_rows:
+        best_track = min(track_rows, key=lambda item: item["avg_500eq_ms"])
+        worst_track = max(track_rows, key=lambda item: item["avg_500eq_ms"])
+        best_track_summary = {"name": best_track["track"], "delta_ms": best_track["avg_500eq_ms"] - overall_500eq_ms}
+        worst_track_summary = {"name": worst_track["track"], "delta_ms": worst_track["avg_500eq_ms"] - overall_500eq_ms}
+
+    fastest_lap = None
+    fastest_opener = None
+    for row in sorted_timed_rows:
+        laps = laps_from_csv(row["laps_csv"])
+        if not laps:
+            continue
+        opener_ms = int(round(laps[0] * 1000))
+        if fastest_opener is None or opener_ms < fastest_opener["time_ms"]:
+            fastest_opener = {
+                "time_ms": opener_ms,
+                "distance_m": int(row["distance_m"]),
+                "venue": row["venue"] or "-",
+                "race_id": int(row["id"]),
+            }
+        for lap in laps[1:]:
+            lap_ms = int(round(lap * 1000))
+            if fastest_lap is None or lap_ms < fastest_lap["time_ms"]:
+                fastest_lap = {
+                    "time_ms": lap_ms,
+                    "distance_m": int(row["distance_m"]),
+                    "venue": row["venue"] or "-",
+                    "race_id": int(row["id"]),
+                }
+
+    month_counts: dict[str, int] = {}
+    for row in filtered_rows:
+        date_value = (row["competition_date"] or "").strip()
+        if len(date_value) >= 7:
+            month_key = date_value[:7]
+            month_counts[month_key] = month_counts.get(month_key, 0) + 1
+    busiest_month = None
+    if month_counts:
+        month_key, month_count = sorted(month_counts.items(), key=lambda item: (-item[1], item[0]))[0]
+        busiest_month = {"month": month_key, "count": month_count}
+
+    distance_counts: dict[int, int] = {}
+    for row in filtered_rows:
+        if row["distance_m"] is not None:
+            distance_value = int(row["distance_m"])
+            distance_counts[distance_value] = distance_counts.get(distance_value, 0) + 1
+    most_skated_distance = None
+    if distance_counts:
+        distance_value, count_value = sorted(distance_counts.items(), key=lambda item: (-item[1], item[0]))[0]
+        most_skated_distance = {"distance_m": distance_value, "count": count_value}
+
+    closest_pb_miss = None
+    best_before_by_distance: dict[int, int] = {}
+    for row in sorted_timed_rows:
+        distance_value = int(row["distance_m"])
+        total_ms = int(row["total_time_ms"])
+        prev_best = best_before_by_distance.get(distance_value)
+        if prev_best is not None and total_ms > prev_best:
+            miss_ms = total_ms - prev_best
+            if closest_pb_miss is None or miss_ms < closest_pb_miss["delta_ms"]:
+                closest_pb_miss = {
+                    "delta_ms": miss_ms,
+                    "distance_m": distance_value,
+                    "venue": row["venue"] or "-",
+                    "race_id": int(row["id"]),
+                }
+        if prev_best is None or total_ms < prev_best:
+            best_before_by_distance[distance_value] = total_ms
+
+    month_label = format_month_label_nl(busiest_month["month"]) if busiest_month else None
+    season_story_prefix = f"In het seizoen {selected_season}" if selected_season else "In deze periode"
+    coach_intro_prefix = "Dit seizoen" if selected_season else "In deze periode"
+
+    if fastest_lap or fastest_opener or closest_pb_miss or busiest_month or most_skated_distance:
+        short_paragraphs: list[list[dict]] = []
+        coach_paragraphs: list[list[dict]] = []
+        recap_paragraphs: list[list[dict]] = []
+
+        speed_short: list[dict] = []
+        if fastest_lap:
+            speed_short.extend(
+                [
+                    story_text(f"{season_story_prefix} reed je je snelste ronde"),
+                    story_link(fmt_ms(int(fastest_lap["time_ms"])), fastest_lap.get("race_id"), "positive"),
+                    story_text(f" op de {fastest_lap['distance_m']}m in {fastest_lap['venue']}."),
+                ]
+            )
+        if fastest_opener:
+            if speed_short:
+                speed_short.append(story_text(" "))
+            speed_short.extend(
+                [
+                    story_text("Je snelste opening klokte je op"),
+                    story_link(fmt_ms(int(fastest_opener["time_ms"])), fastest_opener.get("race_id"), "positive"),
+                    story_text(f" in {fastest_opener['venue']}."),
+                ]
+            )
+        if closest_pb_miss:
+            if speed_short:
+                speed_short.append(story_text(" "))
+            speed_short.extend(
+                [
+                    story_text(f"In {closest_pb_miss['venue']} kwam je het dichtst bij een nieuw PR: je miste het daar met"),
+                    story_link(fmt_ms(int(closest_pb_miss["delta_ms"])), closest_pb_miss.get("race_id"), "negative"),
+                    story_text("."),
+                ]
+            )
+        if speed_short:
+            short_paragraphs.append(speed_short)
+
+        rhythm_short: list[dict] = []
+        if busiest_month and month_label:
+            rhythm_short.extend(
+                [
+                    story_text(f"{month_label} was je drukste maand met"),
+                    story_text(str(busiest_month["count"]), "positive"),
+                    story_text(" ritten."),
+                ]
+            )
+        if most_skated_distance:
+            if rhythm_short:
+                rhythm_short.append(story_text(" "))
+            rhythm_short.extend(
+                [
+                    story_text("De afstand die je het vaakst reed was de"),
+                    story_text(f"{most_skated_distance['distance_m']}m", "positive"),
+                    story_text(f", in totaal {most_skated_distance['count']} keer."),
+                ]
+            )
+        if rhythm_short:
+            short_paragraphs.append(rhythm_short)
+
+        coach_speed: list[dict] = []
+        if fastest_lap or fastest_opener:
+            coach_speed.extend([story_text(f"{coach_intro_prefix} liet je sterke snelheid zien.")])
+            if fastest_lap:
+                coach_speed.extend(
+                    [
+                        story_text(" Je snelste ronde was"),
+                        story_link(fmt_ms(int(fastest_lap["time_ms"])), fastest_lap.get("race_id"), "positive"),
+                        story_text(f" in {fastest_lap['venue']}."),
+                    ]
+                )
+            if fastest_opener:
+                coach_speed.extend(
+                    [
+                        story_text(" Je beste opening was"),
+                        story_link(fmt_ms(int(fastest_opener["time_ms"])), fastest_opener.get("race_id"), "positive"),
+                        story_text(f" in {fastest_opener['venue']}."),
+                    ]
+                )
+        if coach_speed:
+            coach_paragraphs.append(coach_speed)
+
+        coach_followup: list[dict] = []
+        if closest_pb_miss:
+            coach_followup.extend(
+                [
+                    story_text(f"In {closest_pb_miss['venue']} zat je ook het dichtst bij een persoonlijk record:"),
+                    story_link(fmt_ms(int(closest_pb_miss["delta_ms"])), closest_pb_miss.get("race_id"), "negative"),
+                    story_text(" verwijderd van je PR."),
+                ]
+            )
+        if busiest_month and month_label:
+            if coach_followup:
+                coach_followup.append(story_text(" "))
+            coach_followup.extend(
+                [
+                    story_text(f"{month_label} was duidelijk je actiefste maand, met"),
+                    story_text(str(busiest_month["count"]), "positive"),
+                    story_text(" ritten."),
+                ]
+            )
+        if most_skated_distance:
+            if coach_followup:
+                coach_followup.append(story_text(" "))
+            coach_followup.extend(
+                [
+                    story_text("De"),
+                    story_text(f"{most_skated_distance['distance_m']}m", "positive"),
+                    story_text(f" was je meest gereden afstand met {most_skated_distance['count']} starts."),
+                ]
+            )
+        if coach_followup:
+            coach_paragraphs.append(coach_followup)
+
+        recap_intro: list[dict] = [story_text(f"{season_story_prefix} kende een aantal opvallende momenten.")]
+        recap_paragraphs.append(recap_intro)
+
+        recap_body: list[dict] = []
+        if fastest_lap:
+            recap_body.extend(
+                [
+                    story_text("Je snelste ronde reed je in"),
+                    story_text(fastest_lap["venue"], "positive"),
+                    story_text(", waar je"),
+                    story_link(fmt_ms(int(fastest_lap["time_ms"])), fastest_lap.get("race_id"), "positive"),
+                    story_text(f" noteerde op de {fastest_lap['distance_m']}m."),
+                ]
+            )
+        if fastest_opener:
+            if recap_body:
+                recap_body.append(story_text(" "))
+            recap_body.extend(
+                [
+                    story_text("Je snelste opening was"),
+                    story_link(fmt_ms(int(fastest_opener["time_ms"])), fastest_opener.get("race_id"), "positive"),
+                    story_text(f" in {fastest_opener['venue']}."),
+                ]
+            )
+        if closest_pb_miss:
+            if recap_body:
+                recap_body.append(story_text(" "))
+            recap_body.extend(
+                [
+                    story_text("Daar kwam je ook dicht bij een PR, met een marge van"),
+                    story_link(fmt_ms(int(closest_pb_miss["delta_ms"])), closest_pb_miss.get("race_id"), "negative"),
+                    story_text("."),
+                ]
+            )
+        if recap_body:
+            recap_paragraphs.append(recap_body)
+
+        recap_outro: list[dict] = []
+        if busiest_month and month_label:
+            recap_outro.extend(
+                [
+                    story_text(month_label, "positive"),
+                    story_text(" was je meest actieve maand, met"),
+                    story_text(str(busiest_month["count"]), "positive"),
+                    story_text(" ritten."),
+                ]
+            )
+        if most_skated_distance:
+            if recap_outro:
+                recap_outro.append(story_text(" "))
+            recap_outro.extend(
+                [
+                    story_text("Over de hele periode bleek de"),
+                    story_text(f"{most_skated_distance['distance_m']}m", "positive"),
+                    story_text(f" je favoriete afstand: die reed je {most_skated_distance['count']} keer."),
+                ]
+            )
+        if recap_outro:
+            recap_paragraphs.append(recap_outro)
+
+        story_variants = [
+            {"title": "Coach Analyse", "variant": "commentary", "paragraphs": short_paragraphs},
+            {"title": "Coach Analyse", "variant": "analysis", "paragraphs": coach_paragraphs},
+            {"title": "Coach Analyse", "variant": "recap", "paragraphs": recap_paragraphs},
+        ]
+        story_variants = [random.choice([variant for variant in story_variants if variant["paragraphs"]])]
+    else:
+        story_variants = [
+            {
+                "title": "Coach Analyse",
+                "variant": "commentary",
+                "paragraphs": [[story_text("Hier zie je per afstand hoe je tijden, openingen, rondes en verval zich ontwikkelen.")]],
+            }
+        ]
+
+    return {
+        "season_options": season_options,
+        "selected_season": selected_season,
+        "distance_options": distance_options,
+        "selected_distance": selected_distance,
+        "basic_stats": {
+            "competition_count": len({row["competition_id"] for row in filtered_rows}),
+            "race_count": len(filtered_rows),
+            "total_km": total_distance_km,
+            "pb_count": len(pb_race_ids),
+            "sb_count": len(sb_race_ids),
+        },
+        "distance_overview_rows": distance_overview_rows,
+        "average_rows": average_rows,
+        "split_rows": split_rows,
+        "consistency_rows": consistency_rows,
+        "track_rows": track_rows,
+        "best_track_summary": best_track_summary,
+        "worst_track_summary": worst_track_summary,
+        "progress_rows": progress_rows,
+        "fun_stats": {
+            "closest_pb_miss": closest_pb_miss,
+            "fastest_lap": fastest_lap,
+            "fastest_opener": fastest_opener,
+            "busiest_month": busiest_month,
+            "most_skated_distance": most_skated_distance,
+        },
+        "story_variants": story_variants,
+        "sb_reference_season": sb_reference_season,
+    }
+
+
+def build_competitions_context(current_user: sqlite3.Row, q: str = "", venue: str = "", date_from: str = "", date_to: str = "") -> dict:
+    filters = ["owner_user_id = ?"]
+    params: list[object] = [int(current_user["id"])]
+
+    selected_query = q.strip()
+    selected_venue = venue.strip()
+    selected_date_from = date_from.strip()
+    selected_date_to = date_to.strip()
+
+    if selected_query:
+        filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
+        query_like = f"%{selected_query.lower()}%"
+        params.extend([query_like, query_like])
+
+    if selected_venue:
+        filters.append("LOWER(COALESCE(venue, '')) = ?")
+        params.append(selected_venue.lower())
+
+    error_message = ""
+    try:
+        if selected_date_from:
+            filters.append("competition_date >= ?")
+            params.append(parse_date_any(selected_date_from))
+        if selected_date_to:
+            filters.append("competition_date <= ?")
+            params.append(parse_date_any(selected_date_to))
+    except ValueError:
+        error_message = "Ongeldige datumfilter."
+        filters = ["owner_user_id = ?"]
+        params = [int(current_user["id"])]
+        if selected_query:
+            filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
+            query_like = f"%{selected_query.lower()}%"
+            params.extend([query_like, query_like])
+        if selected_venue:
+            filters.append("LOWER(COALESCE(venue, '')) = ?")
+            params.append(selected_venue.lower())
+
+    where_sql = " AND ".join(filters)
+
+    with db() as conn:
+        comps = conn.execute(
+            f"""
+            SELECT id, name, venue, competition_date, notes
+            FROM competition
+            WHERE {where_sql}
+            ORDER BY competition_date DESC, id DESC
+            """,
+            params,
+        ).fetchall()
+        venue_options = conn.execute(
+            """
+            SELECT DISTINCT venue
+            FROM competition
+            WHERE owner_user_id = ? AND venue IS NOT NULL AND TRIM(venue) != ''
+            ORDER BY venue
+            """,
+            (int(current_user["id"]),),
+        ).fetchall()
+
+    return {
+        "comps": comps,
+        "venue_options": venue_options,
+        "selected_query": selected_query,
+        "selected_venue": selected_venue,
+        "selected_date_from": selected_date_from,
+        "selected_date_to": selected_date_to,
+        "error_message": error_message,
+        "filters_open": bool(error_message or selected_venue or selected_date_from or selected_date_to),
+    }
+
+
+def build_races_context(
+    current_user: sqlite3.Row,
+    distance_m: Optional[str] = None,
+    tag_key: str = "",
+    lane: str = "",
+    venue: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> dict:
+    filters = ["r.skater_id = ?", "c.owner_user_id = ?"]
+    params: list[object] = [int(current_user["skater_id"]), int(current_user["id"])]
+
+    selected_distance = distance_m.strip() if distance_m else ""
+    selected_tag = normalize_race_tag(tag_key) or ""
+    selected_lane = lane.strip()
+    selected_venue = venue.strip()
+    selected_date_from = date_from.strip()
+    selected_date_to = date_to.strip()
+
+    if selected_distance:
+        filters.append("r.distance_m = ?")
+        params.append(int(selected_distance))
+    if selected_tag:
+        filters.append("r.tag_key = ?")
+        params.append(selected_tag)
+    if selected_lane:
+        filters.append("LOWER(COALESCE(r.lane, '')) = ?")
+        params.append(selected_lane.lower())
+    if selected_venue:
+        filters.append("LOWER(COALESCE(c.venue, '')) = ?")
+        params.append(selected_venue.lower())
+
+    error_message = ""
+    try:
+        if selected_date_from:
+            filters.append("c.competition_date >= ?")
+            params.append(parse_date_any(selected_date_from))
+        if selected_date_to:
+            filters.append("c.competition_date <= ?")
+            params.append(parse_date_any(selected_date_to))
+    except ValueError:
+        error_message = "Ongeldige datumfilter."
+        params = [int(current_user["skater_id"]), int(current_user["id"])]
+        filters = ["r.skater_id = ?", "c.owner_user_id = ?"]
+        if selected_distance:
+            filters.append("r.distance_m = ?")
+            params.append(int(selected_distance))
+        if selected_tag:
+            filters.append("r.tag_key = ?")
+            params.append(selected_tag)
+        if selected_lane:
+            filters.append("LOWER(COALESCE(r.lane, '')) = ?")
+            params.append(selected_lane.lower())
+        if selected_venue:
+            filters.append("LOWER(COALESCE(c.venue, '')) = ?")
+            params.append(selected_venue.lower())
+
+    where_sql = " AND ".join(filters)
+
+    with db() as conn:
+        race_rows = conn.execute(
+            f"""
+            SELECT r.*, c.name AS competition_name, c.venue, c.competition_date
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE {where_sql}
+            ORDER BY c.competition_date DESC, r.distance_m ASC, r.total_time_ms ASC, r.id DESC
+            """,
+            params,
+        ).fetchall()
+        lane_options = conn.execute(
+            """
+            SELECT DISTINCT lane
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ? AND lane IS NOT NULL AND TRIM(lane) != ''
+            ORDER BY lane
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchall()
+        venue_options = conn.execute(
+            """
+            SELECT DISTINCT c.venue AS venue
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ? AND c.venue IS NOT NULL AND TRIM(c.venue) != ''
+            ORDER BY c.venue
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchall()
+        all_owner_races = conn.execute(
+            """
+            SELECT r.id, r.distance_m, r.total_time_ms, r.dnf, c.competition_date
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ?
+            ORDER BY c.competition_date ASC, r.id ASC
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchall()
+
+    pr_progress = build_pr_progress(all_owner_races)
+    return {
+        "races": annotate_race_tags([{**dict(row), **pr_progress.get(int(row["id"]), {})} for row in race_rows]),
+        "tag_options": [dict(RACE_TAG_META[key]) for key, _, _ in RACE_TAGS],
+        "lane_options": lane_options,
+        "venue_options": venue_options,
+        "selected_distance": selected_distance,
+        "selected_tag": selected_tag,
+        "selected_lane": selected_lane,
+        "selected_venue": selected_venue,
+        "selected_date_from": selected_date_from,
+        "selected_date_to": selected_date_to,
+        "error_message": error_message,
+        "filters_open": bool(error_message or selected_distance or selected_tag or selected_lane or selected_venue or selected_date_from or selected_date_to),
+    }
 
 
 def collect_pr_race_ids(rows: List[sqlite3.Row]) -> set[int]:
@@ -1801,7 +2937,7 @@ def build_distance_stats(rows: List[sqlite3.Row], pr_race_ids: set[int]) -> List
                 "opening_m": opening_split_m(distance),
                 "best_opening_s": min(opening_values) if opening_values else None,
                 "avg_opening_s": mean(opening_values) if opening_values else None,
-                "avg_400_s": mean(avg400_values) if avg400_values else None,
+                "avg_400_s": min(avg400_values) if avg400_values else None,
                 "best_last_400_s": min(last400_values) if last400_values else None,
                 "avg_last_400_s": mean(last400_values) if last400_values else None,
                 "avg_fade_s": mean(fade_values) if fade_values else None,
@@ -1865,7 +3001,31 @@ def account_password_redirect():
 @app.get("/account/settings", response_class=HTMLResponse)
 def account_settings_page(request: Request, error: str = "", success: str = ""):
     current_user = require_user(request)
-    return render(request, "account_password.html", user=current_user, error=error, success=success)
+    monitor_search_name = default_osta_search_name(current_user["skater_name"])
+    monitor_pid = ""
+    monitor_season = default_ssr_season()
+    monitor_mode = "notify"
+    with db() as conn:
+        monitor_config = get_osta_monitor_config(conn, int(current_user["id"]))
+        if monitor_config:
+            monitor_search_name = default_osta_search_name(monitor_config["search_name"] or monitor_search_name)
+            monitor_pid = (monitor_config["pid"] or "").strip()
+            monitor_mode = normalize_osta_monitor_mode(monitor_config["mode"] or "notify")
+            try:
+                monitor_season = normalize_osta_season(monitor_config["season"] or monitor_season)
+            except ValueError:
+                monitor_season = default_ssr_season()
+    return render(
+        request,
+        "account_password.html",
+        user=current_user,
+        error=error,
+        success=success,
+        osta_search_name=monitor_search_name,
+        osta_pid=monitor_pid,
+        osta_mode=monitor_mode,
+        osta_season=monitor_season,
+    )
 
 
 @app.get("/account/export")
@@ -1914,6 +3074,7 @@ def account_settings_profile_post(
     username: str = Form(...),
     skater_name: str = Form(...),
     theme_preference: str = Form("dark"),
+    motion_preference: str = Form("all"),
 ):
     current_user = require_user(request)
     with db() as conn:
@@ -1923,11 +3084,41 @@ def account_settings_profile_post(
             username,
             skater_name,
             theme_preference,
+            motion_preference,
         )
 
     if not ok:
         return RedirectResponse(f"/account/settings?error={result}", status_code=303)
     return RedirectResponse("/account/settings?success=profile", status_code=303)
+
+
+@app.post("/account/settings/osta-monitor")
+def account_settings_osta_monitor_post(
+    request: Request,
+    osta_search_name: str = Form(""),
+    osta_pid: str = Form(""),
+    osta_mode: str = Form("notify"),
+    osta_season: str = Form(""),
+):
+    current_user = require_user(request)
+    search_name_value = osta_search_name.strip() or default_osta_search_name(current_user["skater_name"])
+
+    try:
+        season_value = normalize_osta_season(osta_season)
+    except ValueError:
+        return RedirectResponse("/account/settings?error=ostaseason", status_code=303)
+
+    with db() as conn:
+        upsert_osta_monitor_config(
+            conn,
+            int(current_user["id"]),
+            search_name=search_name_value,
+            season=season_value,
+            pid=osta_pid,
+            mode=osta_mode,
+        )
+
+    return RedirectResponse("/account/settings?success=ostamonitor", status_code=303)
 
 
 @app.post("/account/settings/password")
@@ -2119,21 +3310,11 @@ def admin_user_delete(
 @app.get("/", response_class=HTMLResponse)
 def home(
     request: Request,
-    trend_period: str = "season",
-    trend_date_from: str = "",
-    trend_date_to: str = "",
+    trend_season: str = "",
     osta_notice: str = "",
     osta_count: str = "",
 ):
     current_user = require_user(request)
-    osta_detection = {
-        "configured": False,
-        "available": [],
-        "error_message": "",
-        "search_name": "",
-        "season": "",
-        "pid": "",
-    }
     latest_comp = None
     latest_comp_races: list[sqlite3.Row] = []
     with db() as conn:
@@ -2185,10 +3366,8 @@ def home(
                 """,
                 (int(latest_comp["id"]), int(current_user["id"]), int(current_user["skater_id"])),
             ).fetchall()
-        osta_detection = detect_osta_updates_for_user(conn, current_user)
 
     best_times: dict[int, dict] = {}
-    trend_rows: list[dict] = []
     races_by_distance: dict[int, list] = {}
     distance_counts: dict[int, int] = {}
     venue_counts: dict[str, int] = {}
@@ -2212,10 +3391,13 @@ def home(
     if distance_counts:
         favorite_distance = f"{sorted(distance_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]}m"
 
-    selected_trend_period = trend_period if trend_period in {"month", "season", "custom"} else "season"
-    selected_trend_date_from = trend_date_from.strip()
-    selected_trend_date_to = trend_date_to.strip()
-    trend_error_message = ""
+    osta_notice_count = int(osta_count) if (osta_count or "").isdigit() else 0
+    trend_context = build_home_trend_context(
+        all_races,
+        trend_season,
+        default_to_current=("trend_season" not in request.query_params),
+    )
+
     pr_race_ids = collect_pr_race_ids(all_races)
     latest_comp_analysis = None
     if latest_comp:
@@ -2246,43 +3428,7 @@ def home(
             "races": latest_race_rows,
         }
 
-    today = datetime.now().date()
-    filter_start = None
-    filter_end = None
-
-    try:
-        if selected_trend_period == "month":
-            filter_end = today.strftime("%Y-%m-%d")
-            filter_start = (today - timedelta(days=30)).strftime("%Y-%m-%d")
-        elif selected_trend_period == "season":
-            filter_start, filter_end = current_season_bounds(today)
-        elif selected_trend_period == "custom":
-            filter_start = parse_date_any(selected_trend_date_from) if selected_trend_date_from else None
-            filter_end = parse_date_any(selected_trend_date_to) if selected_trend_date_to else None
-    except ValueError:
-        trend_error_message = "Ongeldig custom datumbereik."
-        selected_trend_period = "season"
-        filter_start, filter_end = current_season_bounds(today)
-
-    for distance in sorted(races_by_distance):
-        rows = races_by_distance[distance]
-        valid_rows = [row for row in rows if row["total_time_ms"] is not None and row["dnf"] != 1]
-        if filter_start:
-            valid_rows = [row for row in valid_rows if row["competition_date"] >= filter_start]
-        if filter_end:
-            valid_rows = [row for row in valid_rows if row["competition_date"] <= filter_end]
-        if not valid_rows:
-            continue
-
-        trend_rows.append(
-            {
-                "distance_m": distance,
-                "count": len(valid_rows),
-                "sparkline": build_sparkline(valid_rows, filter_start, filter_end),
-            }
-        )
-
-    recent_pr_cutoff = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    recent_pr_cutoff = (datetime.now().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     best_times_rows: list[dict] = []
     for distance in sorted(best_times):
         row = dict(best_times[distance])
@@ -2293,8 +3439,7 @@ def home(
         request,
         "index.html",
         osta_notice=(osta_notice or "").strip(),
-        osta_notice_count=int(osta_count) if (osta_count or "").isdigit() else 0,
-        osta_detection=osta_detection,
+        osta_notice_count=osta_notice_count,
         comps=comps,
         competition_count=competition_count,
         race_count=len(all_races),
@@ -2302,25 +3447,55 @@ def home(
         favorite_venue=favorite_venue,
         favorite_distance=favorite_distance,
         best_times=best_times_rows,
-        trend_rows=trend_rows,
-        selected_trend_period=selected_trend_period,
-        selected_trend_date_from=selected_trend_date_from,
-        selected_trend_date_to=selected_trend_date_to,
-        trend_filters_open=bool(
-            trend_error_message
-            or selected_trend_period != "season"
-            or selected_trend_date_from
-            or selected_trend_date_to
-        ),
-        trend_filter_label=(
-            f"{fmt_date_ymd_to_dmy(filter_start)} t/m {fmt_date_ymd_to_dmy(filter_end)}"
-            if filter_start and filter_end
-            else "Vrij bereik"
-        ),
-        trend_error_message=trend_error_message,
         latest_comp_analysis=latest_comp_analysis,
         fmt_ms=fmt_ms,
         fmt_date=fmt_date_ymd_to_dmy,
+        **trend_context,
+    )
+
+
+@app.get("/partial/osta-detection", response_class=HTMLResponse)
+def osta_detection_partial(request: Request):
+    current_user = require_user(request)
+    with db() as conn:
+        osta_detection = detect_osta_updates_for_user(conn, current_user)
+
+    return render_fragment(
+        request,
+        "_osta_detection.html",
+        fmt_date=fmt_date_ymd_to_dmy,
+        osta_detection=osta_detection,
+    )
+
+
+@app.get("/partial/home-trends", response_class=HTMLResponse)
+def home_trends_partial(
+    request: Request,
+    trend_season: str = "",
+):
+    current_user = require_user(request)
+    with db() as conn:
+        all_races = conn.execute(
+            """
+            SELECT r.id, r.competition_id, r.distance_m, r.total_time_ms, r.dnf, r.lane,
+                   c.name AS competition_name, c.competition_date, c.venue
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ? AND r.total_time_ms IS NOT NULL
+            ORDER BY c.competition_date ASC, r.id ASC
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchall()
+
+    return render_fragment(
+        request,
+        "_home_trends.html",
+        fmt_ms=fmt_ms,
+        **build_home_trend_context(
+            all_races,
+            trend_season,
+            default_to_current=("trend_season" not in request.query_params),
+        ),
     )
 
 
@@ -2343,322 +3518,81 @@ def stats_page(
             """,
             (int(current_user["skater_id"]), int(current_user["id"])),
         ).fetchall()
-
-    season_options = collect_season_labels(rows)
-    selected_season = season.strip()
-    current_season = season_label_for_date(datetime.now().strftime("%Y-%m-%d"))
-    if selected_season not in season_options:
-        selected_season = current_season if current_season in season_options else ""
-
-    selected_distance = distance_m.strip()
-    distance_options = sorted({int(row["distance_m"]) for row in rows if row["distance_m"] is not None})
-    filtered_rows = list(rows)
-    if selected_season:
-        season_start, season_end = season_bounds_from_label(selected_season)
-        filtered_rows = [
-            row for row in filtered_rows if season_start <= row["competition_date"] <= season_end
-        ]
-    if selected_distance:
-        try:
-            selected_distance_value = int(selected_distance)
-            filtered_rows = [row for row in filtered_rows if int(row["distance_m"]) == selected_distance_value]
-        except ValueError:
-            selected_distance = ""
-
-    timed_rows = [row for row in filtered_rows if row["total_time_ms"] is not None and row["dnf"] != 1 and row["distance_m"]]
-    sorted_timed_rows = sorted(
-        timed_rows,
-        key=lambda row: (
-            row["competition_date"] or "",
-            int(row["id"]),
-        ),
+    stats_context = build_stats_context(
+        rows,
+        season,
+        distance_m,
+        default_to_current=("season" not in request.query_params),
     )
-
-    pb_race_ids = collect_pr_race_ids(filtered_rows)
-
-    sb_race_ids: set[int] = set()
-    sb_best_by_key: dict[tuple[str, int], int] = {}
-    for row in sorted_timed_rows:
-        season_label = season_label_for_date(row["competition_date"])
-        key = (season_label, int(row["distance_m"]))
-        total_ms = int(row["total_time_ms"])
-        best_value = sb_best_by_key.get(key)
-        if best_value is None or total_ms < best_value:
-            sb_best_by_key[key] = total_ms
-            sb_race_ids.add(int(row["id"]))
-
-    total_distance_km = sum(int(row["distance_m"]) for row in filtered_rows if row["distance_m"] is not None) / 1000.0
-
-    by_distance: dict[int, list[sqlite3.Row]] = {}
-    for row in sorted_timed_rows:
-        by_distance.setdefault(int(row["distance_m"]), []).append(row)
-
-    sb_reference_season = selected_season or current_season
-    average_rows: list[dict] = []
-    split_rows: list[dict] = []
-    consistency_rows: list[dict] = []
-    progress_rows: list[dict] = []
-
-    for distance in sorted(by_distance):
-        rows_for_distance = by_distance[distance]
-        times = [int(row["total_time_ms"]) for row in rows_for_distance]
-        pb_row = min(rows_for_distance, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
-        pb_ms = int(pb_row["total_time_ms"])
-        season_subset = [
-            row for row in rows_for_distance if season_label_for_date(row["competition_date"]) == sb_reference_season
-        ]
-        season_best_row = (
-            min(season_subset, key=lambda row: (int(row["total_time_ms"]), int(row["id"])))
-            if season_subset
-            else None
-        )
-        season_best_ms = int(season_best_row["total_time_ms"]) if season_best_row is not None else None
-        avg_ms = int(round(mean(times)))
-        median_ms = int(round(median(times)))
-
-        average_rows.append(
-            {
-                "distance_m": distance,
-                "pb_ms": pb_ms,
-                "pb_race_id": int(pb_row["id"]),
-                "season_best_ms": season_best_ms,
-                "season_best_race_id": int(season_best_row["id"]) if season_best_row is not None else None,
-                "average_ms": avg_ms,
-                "median_ms": median_ms,
-            }
-        )
-
-        openings: list[float] = []
-        full_laps: list[float] = []
-        fades: list[float] = []
-        lap_values_by_index: dict[int, list[float]] = {}
-        for row in rows_for_distance:
-            laps = laps_from_csv(row["laps_csv"])
-            if not laps:
-                continue
-            openings.append(laps[0])
-            if len(laps) > 1:
-                split_laps = laps[1:]
-                full_laps.extend(split_laps)
-                fades.append(split_laps[-1] - min(split_laps))
-                for idx in range(1, len(laps)):
-                    lap_values_by_index.setdefault(idx, []).append(laps[idx])
-
-        if openings or full_laps:
-            split_rows.append(
-                {
-                    "distance_m": distance,
-                    "avg_opening_s": mean(openings) if openings else None,
-                    "best_opening_s": min(openings) if openings else None,
-                    "avg_lap_s": mean(full_laps) if full_laps else None,
-                    "best_lap_s": min(full_laps) if full_laps else None,
-                    "avg_fade_s": mean(fades) if fades else None,
-                    "lap_averages": [
-                        {"lap_no": idx, "avg_s": mean(values)}
-                        for idx, values in sorted(lap_values_by_index.items())
-                    ],
-                }
-            )
-
-        std_ms = int(round(pstdev(times))) if len(times) >= 2 else 0
-        range_ms = max(times) - min(times)
-        consistency_rows.append(
-            {
-                "distance_m": distance,
-                "std_dev_ms": std_ms,
-                "range_ms": range_ms,
-            }
-        )
-
-        first_row = rows_for_distance[0]
-        latest_row = rows_for_distance[-1]
-        last5 = rows_for_distance[-5:]
-        last5_avg_ms = int(round(mean(int(row["total_time_ms"]) for row in last5))) if last5 else None
-        season_avg_ms = (
-            int(round(mean(int(row["total_time_ms"]) for row in season_subset)))
-            if season_subset
-            else None
-        )
-        trend = "n.v.t."
-        if last5_avg_ms is not None and season_avg_ms is not None:
-            if last5_avg_ms <= season_avg_ms - 200:
-                trend = "verbeterend"
-            elif last5_avg_ms >= season_avg_ms + 200:
-                trend = "verslechterend"
-            else:
-                trend = "stabiel"
-
-        progress_rows.append(
-            {
-                "distance_m": distance,
-                "first_ms": int(first_row["total_time_ms"]),
-                "first_race_id": int(first_row["id"]),
-                "latest_ms": int(latest_row["total_time_ms"]),
-                "latest_race_id": int(latest_row["id"]),
-                "improvement_ms": int(latest_row["total_time_ms"]) - int(first_row["total_time_ms"]),
-                "last5_avg_ms": last5_avg_ms,
-                "season_avg_ms": season_avg_ms,
-                "trend": trend,
-            }
-        )
-
-    track_grouped: dict[str, list[sqlite3.Row]] = {}
-    for row in sorted_timed_rows:
-        venue = (row["venue"] or "").strip()
-        if not venue:
-            continue
-        track_grouped.setdefault(venue, []).append(row)
-
-    track_rows: list[dict] = []
-    all_500eq_values: list[int] = []
-    for venue, venue_rows in track_grouped.items():
-        per_500eq = [
-            int(round((int(row["total_time_ms"]) * 500) / int(row["distance_m"])))
-            for row in venue_rows
-            if int(row["distance_m"]) > 0
-        ]
-        if not per_500eq:
-            continue
-        all_500eq_values.extend(per_500eq)
-        track_rows.append(
-            {
-                "track": venue,
-                "race_count": len(venue_rows),
-                "avg_500eq_ms": int(round(mean(per_500eq))),
-                "best_500eq_ms": min(per_500eq),
-            }
-        )
-
-    track_rows = sorted(track_rows, key=lambda item: (item["avg_500eq_ms"], item["track"].lower()))
-    overall_500eq_ms = int(round(mean(all_500eq_values))) if all_500eq_values else None
-    best_track_summary = None
-    worst_track_summary = None
-    if overall_500eq_ms is not None and track_rows:
-        best_track = min(track_rows, key=lambda item: item["avg_500eq_ms"])
-        worst_track = max(track_rows, key=lambda item: item["avg_500eq_ms"])
-        best_track_summary = {
-            "name": best_track["track"],
-            "delta_ms": best_track["avg_500eq_ms"] - overall_500eq_ms,
-        }
-        worst_track_summary = {
-            "name": worst_track["track"],
-            "delta_ms": worst_track["avg_500eq_ms"] - overall_500eq_ms,
-        }
-
-    fastest_lap = None
-    fastest_opener = None
-    for row in sorted_timed_rows:
-        laps = laps_from_csv(row["laps_csv"])
-        if not laps:
-            continue
-        opener_ms = int(round(laps[0] * 1000))
-        if fastest_opener is None or opener_ms < fastest_opener["time_ms"]:
-            fastest_opener = {
-                "time_ms": opener_ms,
-                "distance_m": int(row["distance_m"]),
-                "venue": row["venue"] or "-",
-            }
-        for lap in laps[1:]:
-            lap_ms = int(round(lap * 1000))
-            if fastest_lap is None or lap_ms < fastest_lap["time_ms"]:
-                fastest_lap = {
-                    "time_ms": lap_ms,
-                    "distance_m": int(row["distance_m"]),
-                    "venue": row["venue"] or "-",
-                }
-
-    month_counts: dict[str, int] = {}
-    for row in filtered_rows:
-        date_value = (row["competition_date"] or "").strip()
-        if len(date_value) >= 7:
-            month_key = date_value[:7]
-            month_counts[month_key] = month_counts.get(month_key, 0) + 1
-    busiest_month = None
-    if month_counts:
-        month_key, month_count = sorted(month_counts.items(), key=lambda item: (-item[1], item[0]))[0]
-        busiest_month = {"month": month_key, "count": month_count}
-
-    distance_counts: dict[int, int] = {}
-    for row in filtered_rows:
-        if row["distance_m"] is None:
-            continue
-        distance_value = int(row["distance_m"])
-        distance_counts[distance_value] = distance_counts.get(distance_value, 0) + 1
-    most_skated_distance = None
-    if distance_counts:
-        distance_value, count_value = sorted(distance_counts.items(), key=lambda item: (-item[1], item[0]))[0]
-        most_skated_distance = {"distance_m": distance_value, "count": count_value}
-
-    closest_pb_miss = None
-    best_before_by_distance: dict[int, int] = {}
-    for row in sorted_timed_rows:
-        distance_value = int(row["distance_m"])
-        total_ms = int(row["total_time_ms"])
-        prev_best = best_before_by_distance.get(distance_value)
-        if prev_best is not None and total_ms > prev_best:
-            miss_ms = total_ms - prev_best
-            if closest_pb_miss is None or miss_ms < closest_pb_miss["delta_ms"]:
-                closest_pb_miss = {
-                    "delta_ms": miss_ms,
-                    "distance_m": distance_value,
-                    "venue": row["venue"] or "-",
-                }
-        if prev_best is None or total_ms < prev_best:
-            best_before_by_distance[distance_value] = total_ms
 
     return render(
         request,
         "stats.html",
-        season_options=season_options,
-        selected_season=selected_season,
-        distance_options=distance_options,
-        selected_distance=selected_distance,
-        basic_stats={
-            "competition_count": len({row["competition_id"] for row in filtered_rows}),
-            "race_count": len(filtered_rows),
-            "total_km": total_distance_km,
-            "pb_count": len(pb_race_ids),
-            "sb_count": len(sb_race_ids),
-        },
-        average_rows=average_rows,
-        split_rows=split_rows,
-        consistency_rows=consistency_rows,
-        track_rows=track_rows,
-        best_track_summary=best_track_summary,
-        worst_track_summary=worst_track_summary,
-        progress_rows=progress_rows,
-        fun_stats={
-            "closest_pb_miss": closest_pb_miss,
-            "fastest_lap": fastest_lap,
-            "fastest_opener": fastest_opener,
-            "busiest_month": busiest_month,
-            "most_skated_distance": most_skated_distance,
-        },
-        sb_reference_season=sb_reference_season,
         fmt_ms=fmt_ms,
         fmt_sec=fmt_sec,
         fmt_date=fmt_date_ymd_to_dmy,
+        **stats_context,
+    )
+
+
+@app.get("/partial/stats-content", response_class=HTMLResponse)
+def stats_content_partial(
+    request: Request,
+    season: str = "",
+    distance_m: str = "",
+):
+    current_user = require_user(request)
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.competition_id, r.distance_m, r.total_time_ms, r.laps_csv, r.dnf,
+                   c.name AS competition_name, c.competition_date, c.venue
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.skater_id = ? AND c.owner_user_id = ?
+            ORDER BY c.competition_date ASC, r.id ASC
+            """,
+            (int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchall()
+
+    return render_fragment(
+        request,
+        "_stats_content.html",
+        fmt_ms=fmt_ms,
+        fmt_sec=fmt_sec,
+        fmt_date=fmt_date_ymd_to_dmy,
+        **build_stats_context(
+            rows,
+            season,
+            distance_m,
+            default_to_current=("season" not in request.query_params),
+        ),
     )
 
 
 @app.get("/goals", response_class=HTMLResponse)
-def goals_page(request: Request, success: str = "", error: str = ""):
+def goals_redirect():
+    return RedirectResponse("/targets", status_code=303)
+
+
+@app.get("/targets", response_class=HTMLResponse)
+def targets_page(request: Request, success: str = "", error: str = ""):
     current_user = require_user(request)
     with db() as conn:
-        goals = get_goal_targets(conn, int(current_user["id"]))
+        context = build_target_page_context(conn, current_user)
     return render(
         request,
         "goals.html",
-        goals=goals,
-        distances=SSR_DISTANCES,
         success=success,
         error=error,
         fmt_ms=fmt_ms,
+        fmt_date=fmt_date_ymd_to_dmy,
+        **context,
     )
 
 
-@app.post("/goals")
-def goals_save(
+@app.post("/targets")
+def targets_save(
     request: Request,
     distance_m: int = Form(...),
     target_time: str = Form(""),
@@ -2676,7 +3610,7 @@ def goals_save(
         target_last_400_ms = parse_optional_time_to_ms(target_last_400)
         target_fade_400_ms = parse_optional_time_to_ms(target_fade_400)
     except ValueError:
-        return RedirectResponse("/goals?error=time", status_code=303)
+        return RedirectResponse("/targets?error=time", status_code=303)
 
     if not any(
         value is not None
@@ -2688,7 +3622,7 @@ def goals_save(
             target_fade_400_ms,
         )
     ) and not notes.strip():
-        return RedirectResponse("/goals?error=empty", status_code=303)
+        return RedirectResponse("/targets?error=empty", status_code=303)
 
     with db() as conn:
         upsert_goal_target(
@@ -2702,15 +3636,43 @@ def goals_save(
             target_fade_400_ms,
             notes,
         )
-    return RedirectResponse("/goals?success=saved", status_code=303)
+    return RedirectResponse("/targets?success=saved", status_code=303)
 
 
-@app.post("/goals/{distance_m}/delete")
-def goals_delete(request: Request, distance_m: int):
+@app.post("/goals")
+def goals_save_compat(
+    request: Request,
+    distance_m: int = Form(...),
+    target_time: str = Form(""),
+    target_opening: str = Form(""),
+    target_avg_400: str = Form(""),
+    target_last_400: str = Form(""),
+    target_fade_400: str = Form(""),
+    notes: str = Form(""),
+):
+    return targets_save(
+        request,
+        distance_m=distance_m,
+        target_time=target_time,
+        target_opening=target_opening,
+        target_avg_400=target_avg_400,
+        target_last_400=target_last_400,
+        target_fade_400=target_fade_400,
+        notes=notes,
+    )
+
+
+@app.post("/targets/{distance_m}/delete")
+def targets_delete(request: Request, distance_m: int):
     current_user = require_user(request)
     with db() as conn:
         delete_goal_target(conn, int(current_user["id"]), distance_m)
-    return RedirectResponse("/goals?success=deleted", status_code=303)
+    return RedirectResponse("/targets?success=deleted", status_code=303)
+
+
+@app.post("/goals/{distance_m}/delete")
+def goals_delete_compat(request: Request, distance_m: int):
+    return targets_delete(request, distance_m)
 
 
 @app.get("/competitions", response_class=HTMLResponse)
@@ -2722,76 +3684,29 @@ def competitions(
     date_to: str = "",
 ):
     current_user = require_user(request)
-    filters = ["owner_user_id = ?"]
-    params: list[object] = [int(current_user["id"])]
-
-    selected_query = q.strip()
-    selected_venue = venue.strip()
-    selected_date_from = date_from.strip()
-    selected_date_to = date_to.strip()
-
-    if selected_query:
-        filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
-        query_like = f"%{selected_query.lower()}%"
-        params.extend([query_like, query_like])
-
-    if selected_venue:
-        filters.append("LOWER(COALESCE(venue, '')) = ?")
-        params.append(selected_venue.lower())
-
-    error_message = ""
-    try:
-        if selected_date_from:
-            filters.append("competition_date >= ?")
-            params.append(parse_date_any(selected_date_from))
-        if selected_date_to:
-            filters.append("competition_date <= ?")
-            params.append(parse_date_any(selected_date_to))
-    except ValueError:
-        error_message = "Ongeldige datumfilter."
-        filters = ["owner_user_id = ?"]
-        params = [int(current_user["id"])]
-        if selected_query:
-            filters.append("(LOWER(name) LIKE ? OR LOWER(COALESCE(venue, '')) LIKE ?)")
-            query_like = f"%{selected_query.lower()}%"
-            params.extend([query_like, query_like])
-        if selected_venue:
-            filters.append("LOWER(COALESCE(venue, '')) = ?")
-            params.append(selected_venue.lower())
-
-    where_sql = " AND ".join(filters)
-
-    with db() as conn:
-        comps = conn.execute(
-            f"""
-            SELECT id, name, venue, competition_date, notes
-            FROM competition
-            WHERE {where_sql}
-            ORDER BY competition_date DESC, id DESC
-            """,
-            params,
-        ).fetchall()
-        venue_options = conn.execute(
-            """
-            SELECT DISTINCT venue
-            FROM competition
-            WHERE owner_user_id = ? AND venue IS NOT NULL AND TRIM(venue) != ''
-            ORDER BY venue
-            """,
-            (int(current_user["id"]),),
-        ).fetchall()
+    competitions_context = build_competitions_context(current_user, q, venue, date_from, date_to)
     return render(
         request,
         "competitions.html",
-        comps=comps,
-        venue_options=venue_options,
-        selected_query=selected_query,
-        selected_venue=selected_venue,
-        selected_date_from=selected_date_from,
-        selected_date_to=selected_date_to,
-        error_message=error_message,
-        filters_open=bool(error_message or selected_venue or selected_date_from or selected_date_to),
         fmt_date=fmt_date_ymd_to_dmy,
+        **competitions_context,
+    )
+
+
+@app.get("/partial/competitions-content", response_class=HTMLResponse)
+def competitions_content_partial(
+    request: Request,
+    q: str = "",
+    venue: str = "",
+    date_from: str = "",
+    date_to: str = "",
+):
+    current_user = require_user(request)
+    return render_fragment(
+        request,
+        "_competitions_content.html",
+        fmt_date=fmt_date_ymd_to_dmy,
+        **build_competitions_context(current_user, q, venue, date_from, date_to),
     )
 
 
@@ -2914,7 +3829,7 @@ def competition_detail(request: Request, competition_id: int):
     for r in races:
         laps = laps_from_csv(r["laps_csv"])
         metrics = compute_race_metrics(laps, r["distance_m"])
-        races_enriched.append((r, metrics))
+        races_enriched.append(({**dict(r), "tag": race_tag_badge(r["tag_key"])}, metrics))
 
     return render(
         request,
@@ -2943,127 +3858,61 @@ def competition_delete(request: Request, competition_id: int):
     return RedirectResponse("/competitions", status_code=303)
 
 
+@app.post("/competitions/{competition_id}/delete-and-blacklist")
+def competition_delete_and_blacklist(request: Request, competition_id: int):
+    current_user = require_user(request)
+    with db() as conn:
+        comp = conn.execute(
+            "SELECT id FROM competition WHERE id = ? AND owner_user_id = ?",
+            (competition_id, int(current_user["id"])),
+        ).fetchone()
+        if not comp:
+            return HTMLResponse("Competition not found", status_code=404)
+
+        add_osta_blacklist_item_for_competition(conn, int(current_user["id"]), competition_id)
+        conn.execute("DELETE FROM competition WHERE id = ?", (competition_id,))
+
+    return RedirectResponse("/competitions", status_code=303)
+
+
 @app.get("/races", response_class=HTMLResponse)
 def races(
     request: Request,
     distance_m: Optional[str] = None,
+    tag_key: str = "",
     lane: str = "",
     venue: str = "",
     date_from: str = "",
     date_to: str = "",
 ):
     current_user = require_user(request)
-    filters = ["r.skater_id = ?", "c.owner_user_id = ?"]
-    params: list[object] = [int(current_user["skater_id"]), int(current_user["id"])]
-
-    selected_distance = distance_m.strip() if distance_m else ""
-    selected_lane = lane.strip()
-    selected_venue = venue.strip()
-    selected_date_from = date_from.strip()
-    selected_date_to = date_to.strip()
-
-    if selected_distance:
-        filters.append("r.distance_m = ?")
-        params.append(int(selected_distance))
-
-    if selected_lane:
-        filters.append("LOWER(COALESCE(r.lane, '')) = ?")
-        params.append(selected_lane.lower())
-
-    if selected_venue:
-        filters.append("LOWER(COALESCE(c.venue, '')) = ?")
-        params.append(selected_venue.lower())
-
-    error_message = ""
-    try:
-        if selected_date_from:
-            filters.append("c.competition_date >= ?")
-            params.append(parse_date_any(selected_date_from))
-
-        if selected_date_to:
-            filters.append("c.competition_date <= ?")
-            params.append(parse_date_any(selected_date_to))
-    except ValueError:
-        error_message = "Ongeldige datumfilter."
-        params = [int(current_user["skater_id"]), int(current_user["id"])]
-        filters = ["r.skater_id = ?", "c.owner_user_id = ?"]
-        if selected_distance:
-            filters.append("r.distance_m = ?")
-            params.append(int(selected_distance))
-        if selected_lane:
-            filters.append("LOWER(COALESCE(r.lane, '')) = ?")
-            params.append(selected_lane.lower())
-        if selected_venue:
-            filters.append("LOWER(COALESCE(c.venue, '')) = ?")
-            params.append(selected_venue.lower())
-
-    where_sql = " AND ".join(filters)
-
-    with db() as conn:
-        race_rows = conn.execute(
-            f"""
-            SELECT r.*, c.name AS competition_name, c.venue, c.competition_date
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE {where_sql}
-            ORDER BY c.competition_date DESC, r.distance_m ASC, r.total_time_ms ASC, r.id DESC
-            """,
-            params,
-        ).fetchall()
-        lane_options = conn.execute(
-            """
-            SELECT DISTINCT lane
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE r.skater_id = ? AND c.owner_user_id = ? AND lane IS NOT NULL AND TRIM(lane) != ''
-            ORDER BY lane
-            """,
-            (int(current_user["skater_id"]), int(current_user["id"])),
-        ).fetchall()
-        venue_options = conn.execute(
-            """
-            SELECT DISTINCT c.venue AS venue
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE r.skater_id = ? AND c.owner_user_id = ? AND c.venue IS NOT NULL AND TRIM(c.venue) != ''
-            ORDER BY c.venue
-            """,
-            (int(current_user["skater_id"]), int(current_user["id"])),
-        ).fetchall()
-        all_owner_races = conn.execute(
-            """
-            SELECT r.id, r.distance_m, r.total_time_ms, r.dnf, c.competition_date
-            FROM race r
-            JOIN competition c ON c.id = r.competition_id
-            WHERE r.skater_id = ? AND c.owner_user_id = ?
-            ORDER BY c.competition_date ASC, r.id ASC
-            """,
-            (int(current_user["skater_id"]), int(current_user["id"])),
-        ).fetchall()
-
-    pr_progress = build_pr_progress(all_owner_races)
+    races_context = build_races_context(current_user, distance_m, tag_key, lane, venue, date_from, date_to)
     return render(
         request,
         "races.html",
-        races=[{**dict(row), **pr_progress.get(int(row["id"]), {})} for row in race_rows],
-        lane_options=lane_options,
-        venue_options=venue_options,
-        selected_distance=selected_distance,
-        selected_lane=selected_lane,
-        selected_venue=selected_venue,
-        selected_date_from=selected_date_from,
-        selected_date_to=selected_date_to,
-        error_message=error_message,
-        filters_open=bool(
-            error_message
-            or selected_distance
-            or selected_lane
-            or selected_venue
-            or selected_date_from
-            or selected_date_to
-        ),
         fmt_ms=fmt_ms,
         fmt_date=fmt_date_ymd_to_dmy,
+        **races_context,
+    )
+
+
+@app.get("/partial/races-content", response_class=HTMLResponse)
+def races_content_partial(
+    request: Request,
+    distance_m: Optional[str] = None,
+    tag_key: str = "",
+    lane: str = "",
+    venue: str = "",
+    date_from: str = "",
+    date_to: str = "",
+):
+    current_user = require_user(request)
+    return render_fragment(
+        request,
+        "_races_content.html",
+        fmt_ms=fmt_ms,
+        fmt_date=fmt_date_ymd_to_dmy,
+        **build_races_context(current_user, distance_m, tag_key, lane, venue, date_from, date_to),
     )
 
 
@@ -3098,6 +3947,7 @@ def race_new(request: Request, competition_id: Optional[int] = None):
         comps=comps,
         selected_competition_id=competition_id,
         fmt_date=fmt_date_ymd_to_dmy,
+        race_tags=[dict(RACE_TAG_META[key]) for key, _, _ in RACE_TAGS],
     )
 
 
@@ -3109,6 +3959,7 @@ def race_new_post(
     new_competition_venue: str = Form(""),
     new_competition_date: str = Form(""),
     distance_m: int = Form(...),
+    tag_key: str = Form(""),
     lane: str = Form(""),
     opponent: str = Form(""),
     laps: str = Form(""),
@@ -3164,10 +4015,10 @@ def race_new_post(
         cur = conn.execute(
             """
             INSERT INTO race(
-              competition_id, skater_id, distance_m, category, class_name, lane, opponent,
+              competition_id, skater_id, distance_m, category, class_name, tag_key, lane, opponent,
               total_time_ms, laps_csv, dnf, notes, created_at
             )
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 competition_id,
@@ -3175,6 +4026,7 @@ def race_new_post(
                 int(distance_m),
                 None,
                 None,
+                normalize_race_tag(tag_key),
                 lane.strip() or None,
                 opponent.strip() or None,
                 total_ms,
@@ -3228,7 +4080,7 @@ def race_detail(request: Request, race_id: int):
     return render(
         request,
         "race_detail.html",
-        race=r,
+        race={**dict(r), "tag": race_tag_badge(r["tag_key"])},
         laps=laps,
         split_rows=split_rows,
         metrics=metrics,
@@ -3323,6 +4175,28 @@ def race_delete(request: Request, race_id: int):
     return RedirectResponse(f"/competitions/{race['competition_id']}", status_code=303)
 
 
+@app.post("/races/{race_id}/delete-and-blacklist")
+def race_delete_and_blacklist(request: Request, race_id: int):
+    current_user = require_user(request)
+    with db() as conn:
+        race = conn.execute(
+            """
+            SELECT r.id, r.competition_id
+            FROM race r
+            JOIN competition c ON c.id = r.competition_id
+            WHERE r.id = ? AND r.skater_id = ? AND c.owner_user_id = ?
+            """,
+            (race_id, int(current_user["skater_id"]), int(current_user["id"])),
+        ).fetchone()
+        if not race:
+            return HTMLResponse("Race not found", status_code=404)
+
+        add_osta_blacklist_item_for_competition(conn, int(current_user["id"]), int(race["competition_id"]))
+        conn.execute("DELETE FROM race WHERE id = ?", (race_id,))
+
+    return RedirectResponse(f"/competitions/{race['competition_id']}", status_code=303)
+
+
 # -----------------------
 # Edit race
 # -----------------------
@@ -3361,6 +4235,7 @@ def race_edit(request: Request, race_id: int):
         comps=comps,
         fmt_ms=fmt_ms,
         fmt_date=fmt_date_ymd_to_dmy,
+        race_tags=[dict(RACE_TAG_META[key]) for key, _, _ in RACE_TAGS],
     )
 
 
@@ -3373,6 +4248,7 @@ def race_edit_post(
     new_competition_venue: str = Form(""),
     new_competition_date: str = Form(""),
     distance_m: int = Form(...),
+    tag_key: str = Form(""),
     lane: str = Form(""),
     opponent: str = Form(""),
     laps: str = Form(""),
@@ -3446,6 +4322,7 @@ def race_edit_post(
                 distance_m = ?,
                 category = NULL,
                 class_name = NULL,
+                tag_key = ?,
                 lane = ?,
                 opponent = ?,
                 total_time_ms = ?,
@@ -3457,6 +4334,7 @@ def race_edit_post(
             (
                 competition_id,
                 int(distance_m),
+                normalize_race_tag(tag_key),
                 lane.strip() or None,
                 opponent.strip() or None,
                 total_ms,
@@ -3865,7 +4743,7 @@ def import_competition_signature(source: str, competition: dict, source_meta: Op
     source_meta = source_meta or {}
 
     if source_value == "osta":
-        pid_value = str(source_meta.get("pid") or competition.get("source_pid") or "").strip()
+        pid_value = str(competition.get("source_pid") or source_meta.get("pid") or "").strip()
         return osta_competition_signature(comp_date, comp_name, pid_value)
     if source_value == "ssr":
         skater_id = str(source_meta.get("ssr_skater_id") or "").strip()
@@ -3914,6 +4792,92 @@ def list_blacklist_items(conn: sqlite3.Connection, user_id: int) -> list[sqlite3
         """,
         (user_id,),
     ).fetchall()
+
+
+def extract_osta_pid_from_note_text(note_text: str) -> str:
+    text = (note_text or "").strip()
+    if not text:
+        return ""
+
+    query_match = OSTA_PID_QUERY_RE.search(text)
+    if query_match:
+        return unquote(query_match.group(1)).strip()
+
+    legacy_match = OSTA_PID_LEGACY_RE.search(text)
+    if legacy_match:
+        return legacy_match.group(1).strip()
+
+    return ""
+
+
+def extract_osta_pid_from_notes(note_values: list[Optional[str]]) -> str:
+    for note_value in note_values:
+        for raw_line in (note_value or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            normalized_line = normalize_note_line(line)
+            for candidate in (line, normalized_line):
+                pid_value = extract_osta_pid_from_note_text(candidate)
+                if pid_value:
+                    return pid_value
+    return ""
+
+
+def add_osta_blacklist_item_for_competition(
+    conn: sqlite3.Connection,
+    user_id: int,
+    competition_id: int,
+) -> bool:
+    competition = conn.execute(
+        """
+        SELECT c.id, c.name, c.competition_date, c.notes, COUNT(r.id) AS race_count
+        FROM competition c
+        LEFT JOIN race r ON r.competition_id = c.id
+        WHERE c.id = ? AND c.owner_user_id = ?
+        GROUP BY c.id, c.name, c.competition_date, c.notes
+        """,
+        (competition_id, user_id),
+    ).fetchone()
+    if not competition:
+        return False
+
+    race_note_rows = conn.execute(
+        """
+        SELECT notes
+        FROM race
+        WHERE competition_id = ?
+        ORDER BY id DESC
+        """,
+        (competition_id,),
+    ).fetchall()
+    pid_value = extract_osta_pid_from_notes(
+        [competition["notes"], *[row["notes"] for row in race_note_rows]],
+    )
+    signature_value = osta_competition_signature(
+        competition["competition_date"],
+        competition["name"],
+        pid_value,
+    )
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO osta_import_blacklist(
+          user_id, comp_signature, comp_name, comp_date, pid, race_count, created_at
+        )
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (
+            user_id,
+            signature_value,
+            (competition["name"] or "").strip() or "OSTA competitie",
+            competition["competition_date"],
+            pid_value or None,
+            int(competition["race_count"] or 0),
+            now_iso(),
+        ),
+    )
+    return True
 
 
 def build_import_preview_items(
@@ -4081,7 +5045,7 @@ def normalize_osta_season(raw_value: str) -> str:
 def get_osta_monitor_config(conn: sqlite3.Connection, user_id: int) -> Optional[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT user_id, search_name, pid, season, updated_at
+        SELECT user_id, search_name, pid, mode, season, updated_at
         FROM osta_monitor_config
         WHERE user_id = ?
         """,
@@ -4095,14 +5059,16 @@ def upsert_osta_monitor_config(
     search_name: str,
     season: str,
     pid: str = "",
+    mode: str = "notify",
 ) -> None:
     conn.execute(
         """
-        INSERT INTO osta_monitor_config(user_id, search_name, pid, season, updated_at)
-        VALUES(?,?,?,?,?)
+        INSERT INTO osta_monitor_config(user_id, search_name, pid, mode, season, updated_at)
+        VALUES(?,?,?,?,?,?)
         ON CONFLICT(user_id) DO UPDATE SET
           search_name = excluded.search_name,
           pid = excluded.pid,
+          mode = excluded.mode,
           season = excluded.season,
           updated_at = excluded.updated_at
         """,
@@ -4110,6 +5076,7 @@ def upsert_osta_monitor_config(
             user_id,
             default_osta_search_name(search_name),
             (pid or "").strip(),
+            normalize_osta_monitor_mode(mode),
             normalize_osta_season(season),
             now_iso(),
         ),
@@ -4153,7 +5120,8 @@ def list_new_osta_competitions(
     candidates: list[dict] = []
     for item in parsed["competitions"]:
         comp = item["competition"]
-        signature = osta_competition_signature(comp["date"], comp["name"], parsed["pid"])
+        source_pid = str(item.get("pid") or comp.get("source_pid") or parsed.get("pid") or "").strip()
+        signature = osta_competition_signature(comp["date"], comp["name"], source_pid)
         if comp["date"] in existing_dates or signature in blacklisted:
             continue
         candidates.append(
@@ -4162,7 +5130,7 @@ def list_new_osta_competitions(
                 "date": comp["date"],
                 "race_count": len(item["results"]),
                 "signature": signature,
-                "pid": parsed["pid"],
+                "pid": source_pid,
             }
         )
     return candidates
@@ -4174,6 +5142,7 @@ def detect_osta_updates_for_user(conn: sqlite3.Connection, current_user: sqlite3
         search_name = default_osta_search_name(current_user["skater_name"])
         season = default_ssr_season()
         pid = ""
+        mode = "notify"
     else:
         search_name = default_osta_search_name(config["search_name"] or current_user["skater_name"])
         try:
@@ -4181,9 +5150,22 @@ def detect_osta_updates_for_user(conn: sqlite3.Connection, current_user: sqlite3
         except ValueError:
             season = default_ssr_season()
         pid = (config["pid"] or "").strip()
+        mode = normalize_osta_monitor_mode(config["mode"] or "notify")
+
+    if mode == "off":
+        return {
+            "configured": bool(config),
+            "available": [],
+            "error_message": "",
+            "search_name": search_name if config else "",
+            "season": season if config else "",
+            "pid": pid,
+            "mode": mode,
+            "auto_import_summary": None,
+        }
 
     try:
-        parsed = extract_osta_results(search_name, season, pid)
+        parsed = extract_osta_results_for_monitor(search_name, season, pid)
     except ValueError as exc:
         if not config:
             return {
@@ -4193,6 +5175,8 @@ def detect_osta_updates_for_user(conn: sqlite3.Connection, current_user: sqlite3
                 "search_name": "",
                 "season": "",
                 "pid": "",
+                "mode": mode,
+                "auto_import_summary": None,
             }
         return {
             "configured": True,
@@ -4201,23 +5185,51 @@ def detect_osta_updates_for_user(conn: sqlite3.Connection, current_user: sqlite3
             "search_name": search_name,
             "season": season,
             "pid": pid,
+            "mode": mode,
+            "auto_import_summary": None,
         }
 
+    resolved_pid = str(parsed.get("pid") or pid).strip()
     upsert_osta_monitor_config(
         conn,
         int(current_user["id"]),
         search_name=search_name,
         season=season,
-        pid=parsed["pid"],
+        pid=resolved_pid,
+        mode=mode,
     )
+
+    available = list_new_osta_competitions(conn, current_user, parsed)
+    auto_import_summary = None
+    if mode == "auto" and available:
+        candidate_signatures = {item["signature"] for item in available}
+        filtered_competitions = []
+        for item in parsed["competitions"]:
+            comp = item["competition"]
+            source_pid = str(item.get("pid") or comp.get("source_pid") or resolved_pid).strip()
+            signature = osta_competition_signature(comp["date"], comp["name"], source_pid)
+            if signature in candidate_signatures:
+                filtered_competitions.append(item)
+
+        if filtered_competitions:
+            summary = import_osta_competitions(
+                conn,
+                current_user,
+                {"pid": resolved_pid, "competitions": filtered_competitions},
+                update_existing=False,
+            )
+            auto_import_summary = summary
+            available = []
 
     return {
         "configured": True,
-        "available": list_new_osta_competitions(conn, current_user, parsed),
+        "available": available,
         "error_message": "",
         "search_name": search_name,
         "season": season,
-        "pid": parsed["pid"],
+        "pid": resolved_pid,
+        "mode": mode,
+        "auto_import_summary": auto_import_summary,
     }
 
 
@@ -4355,12 +5367,12 @@ def osta_extract_competition_name(detail_soup: BeautifulSoup, fallback_name: str
     return fallback_name
 
 
-def extract_osta_results(search_name: str, season: str, pid: str = "") -> dict:
+def extract_osta_results_for_pid(search_name: str, season: str, pid: str) -> dict:
     season_value = normalize_osta_season(season)
     pid_value = (pid or "").strip()
     resolved_name = default_osta_search_name(search_name)
     if not pid_value:
-        pid_value, resolved_name = osta_lookup_pid(search_name)
+        raise ValueError("OSTA PID ontbreekt.")
 
     soup = osta_fetch_soup(
         "index.php",
@@ -4433,11 +5445,88 @@ def extract_osta_results(search_name: str, season: str, pid: str = "") -> dict:
     if not competitions:
         raise ValueError("Geen OSTA ritten gevonden voor deze naam en dit seizoen.")
 
+    for item in competitions:
+        item["pid"] = pid_value
+
     return {
         "pid": pid_value,
         "resolved_name": resolved_name,
         "competitions": competitions,
     }
+
+
+def merge_osta_results(search_name: str, season: str, parsed_results: list[dict]) -> dict:
+    merged_competitions: list[dict] = []
+    grouped: dict[tuple[str, str, str], dict] = {}
+    seen_races: set[tuple[str, str, str, int, int]] = set()
+    pid_values: list[str] = []
+
+    for parsed in parsed_results:
+        pid_value = str(parsed.get("pid") or "").strip()
+        if pid_value and pid_value not in pid_values:
+            pid_values.append(pid_value)
+        for item in parsed.get("competitions") or []:
+            competition = dict(item.get("competition") or {})
+            source_pid = str(item.get("pid") or competition.get("source_pid") or pid_value).strip()
+            competition["source_pid"] = source_pid
+            comp_key = (
+                str(competition.get("date") or "").strip(),
+                norm_name(str(competition.get("name") or "")),
+                source_pid,
+            )
+            target = grouped.get(comp_key)
+            if target is None:
+                target = {"competition": competition, "results": [], "pid": source_pid}
+                grouped[comp_key] = target
+                merged_competitions.append(target)
+            for result in item.get("results") or []:
+                race_key = (
+                    comp_key[0],
+                    comp_key[1],
+                    source_pid,
+                    int(result.get("distance_m") or 0),
+                    int(result.get("total_time_ms") or 0),
+                )
+                if race_key in seen_races:
+                    continue
+                seen_races.add(race_key)
+                target["results"].append(result)
+
+    competitions = [item for item in merged_competitions if item["results"]]
+    if not competitions:
+        raise ValueError("Geen OSTA ritten gevonden voor deze naam en dit seizoen.")
+
+    return {
+        "pid": pid_values[0] if len(pid_values) == 1 else "",
+        "pids": pid_values,
+        "resolved_name": default_osta_search_name(search_name),
+        "season": normalize_osta_season(season),
+        "competitions": competitions,
+    }
+
+
+def extract_osta_results(search_name: str, season: str, pid: str = "") -> dict:
+    pid_value = (pid or "").strip()
+    if not pid_value:
+        pid_value, _ = osta_lookup_pid(search_name)
+    return extract_osta_results_for_pid(search_name, season, pid_value)
+
+
+def extract_osta_results_for_monitor(search_name: str, season: str, pid: str = "") -> dict:
+    pid_value = (pid or "").strip()
+    if pid_value:
+        return extract_osta_results_for_pid(search_name, season, pid_value)
+
+    candidates = osta_lookup_candidates(search_name)
+    if not candidates:
+        raise ValueError(f"Geen OSTA resultaat gevonden voor '{default_osta_search_name(search_name)}'.")
+
+    parsed_results = [
+        extract_osta_results_for_pid(search_name, season, str(candidate.get("pid") or "").strip())
+        for candidate in candidates
+        if str(candidate.get("pid") or "").strip()
+    ]
+    return merge_osta_results(search_name, season, parsed_results)
 
 
 def import_osta_competitions(
@@ -5159,6 +6248,7 @@ def import_osta_post(
         )
 
     with db() as conn:
+        existing_monitor_config = get_osta_monitor_config(conn, int(current_user["id"]))
         items = build_import_preview_items(
             conn,
             current_user,
@@ -5181,6 +6271,7 @@ def import_osta_post(
             search_name=search_name_value,
             season=season_value,
             pid=parsed["pid"],
+            mode=normalize_osta_monitor_mode(existing_monitor_config["mode"] if existing_monitor_config else "notify"),
         )
         batch_id = create_import_preview_batch(
             conn,
@@ -5281,6 +6372,7 @@ def import_osta_select_post(
         )
 
     with db() as conn:
+        existing_monitor_config = get_osta_monitor_config(conn, int(current_user["id"]))
         items = build_import_preview_items(
             conn,
             current_user,
@@ -5302,6 +6394,7 @@ def import_osta_select_post(
             search_name=search_name_value,
             season=season_value,
             pid=selected_pid_values[0],
+            mode=normalize_osta_monitor_mode(existing_monitor_config["mode"] if existing_monitor_config else "notify"),
         )
         batch_id = create_import_preview_batch(
             conn,
@@ -5566,7 +6659,7 @@ def osta_detection_import_post(request: Request):
         pid = (config["pid"] or "").strip()
 
         try:
-            parsed = extract_osta_results(search_name, season, pid)
+            parsed = extract_osta_results_for_monitor(search_name, season, pid)
         except ValueError:
             return RedirectResponse("/?osta_notice=import_error", status_code=303)
 
@@ -5578,14 +6671,15 @@ def osta_detection_import_post(request: Request):
         filtered_competitions = []
         for item in parsed["competitions"]:
             comp = item["competition"]
-            signature = osta_competition_signature(comp["date"], comp["name"], parsed["pid"])
+            source_pid = str(item.get("pid") or comp.get("source_pid") or parsed.get("pid") or "").strip()
+            signature = osta_competition_signature(comp["date"], comp["name"], source_pid)
             if signature in candidate_signatures:
                 filtered_competitions.append(item)
 
         summary = import_osta_competitions(
             conn,
             current_user,
-            {"pid": parsed["pid"], "competitions": filtered_competitions},
+            {"pid": parsed.get("pid") or pid, "competitions": filtered_competitions},
             update_existing=False,
         )
         upsert_osta_monitor_config(
@@ -5593,7 +6687,8 @@ def osta_detection_import_post(request: Request):
             int(current_user["id"]),
             search_name=search_name,
             season=season,
-            pid=parsed["pid"],
+            pid=str(parsed.get("pid") or pid),
+            mode=normalize_osta_monitor_mode(config["mode"] or "notify"),
         )
 
     imported_total = int(summary["imported_competitions"]) + int(summary["updated_races"])

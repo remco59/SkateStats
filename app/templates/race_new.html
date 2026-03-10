@@ -78,6 +78,15 @@
         </select>
       </label>
 
+      <label>Tag (optioneel)
+        <select name="tag_key">
+          <option value="">Geen tag</option>
+          {% for tag in race_tags %}
+            <option value="{{ tag.key }}">{{ tag.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
       <div class="grid2">
         <label>Baan / Lane (optioneel)
           <input name="lane" placeholder="binnen/buiten" />

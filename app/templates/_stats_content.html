@@ -1,0 +1,310 @@
+<div id="stats-content">
+  {% if story_variants %}
+    <section class="stats-story-grid" aria-label="Statistische verhalen">
+      {% for story in story_variants %}
+        <article class="card stats-story-card stats-story-card-{{ story.variant }}">
+          <div class="stats-story-eyebrow">{{ story.title }}</div>
+          <div class="stats-intro">
+            {% for paragraph in story.paragraphs %}
+              <p>
+                {% for part in paragraph %}
+                  {% if part.href %}
+                    <a href="{{ part.href }}" class="stats-story-link {% if part.tone == 'positive' %}delta-good{% elif part.tone == 'negative' %}delta-bad{% endif %}">{{ part.text }}</a>
+                  {% elif part.tone == 'positive' %}
+                    <span class="delta-good">{{ part.text }}</span>
+                  {% elif part.tone == 'negative' %}
+                    <span class="delta-bad">{{ part.text }}</span>
+                  {% else %}
+                    {{ part.text }}
+                  {% endif %}
+                {% endfor %}
+              </p>
+            {% endfor %}
+          </div>
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <form method="get" action="/stats" class="form" id="stats-filter-form">
+      <div class="grid2">
+        <label>Seizoen
+          <select name="season">
+            <option value="">Alle seizoenen</option>
+            {% for season_label in season_options %}
+              <option value="{{ season_label }}" {% if selected_season == season_label %}selected{% endif %}>{{ season_label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>Afstand
+          <select name="distance_m">
+            <option value="">Alle afstanden</option>
+            {% for distance in distance_options %}
+              <option value="{{ distance }}" {% if selected_distance == (distance|string) %}selected{% endif %}>{{ distance }}m</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <div class="row-actions">
+        <a class="btn" href="/stats">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Basisstatistieken</h2>
+    <div class="grid3">
+      <div class="stat">
+        <div class="label">Totaal aantal wedstrijden</div>
+        <div class="value mono">{{ basic_stats.competition_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Totaal aantal ritten</div>
+        <div class="value mono">{{ basic_stats.race_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Totaal aantal kilometers</div>
+        <div class="value mono">{{ "%.1f"|format(basic_stats.total_km) }} km</div>
+      </div>
+      <div class="stat">
+        <div class="label">Aantal PR's</div>
+        <div class="value mono">{{ basic_stats.pb_count }}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Aantal SB's</div>
+        <div class="value mono">{{ basic_stats.sb_count }}</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Consistentie Statistieken</h2>
+      {% if consistency_rows|length == 0 %}
+        <p>Geen data beschikbaar.</p>
+      {% else %}
+        <table>
+          <thead>
+            <tr>
+              <th>Afstand</th>
+              <th>Standaardafwijking</th>
+              <th>Spreiding</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in consistency_rows %}
+              <tr>
+                <td class="mono">{{ row.distance_m }}m</td>
+                <td class="mono">{{ fmt_ms(row.std_dev_ms) }}</td>
+                <td class="mono">{{ fmt_ms(row.range_ms) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Baanstatistieken</h2>
+      {% if track_rows|length == 0 %}
+        <p>Geen baan-data beschikbaar.</p>
+      {% else %}
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Baan</th>
+                <th>Ritten</th>
+                <th>Gem. 500</th>
+                <th>Beste</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in track_rows %}
+                <tr>
+                  <td>{{ row.track }}</td>
+                  <td class="mono">{{ row.race_count }}</td>
+                  <td class="mono">{{ fmt_ms(row.avg_500eq_ms) }}</td>
+                  <td class="mono">{{ fmt_ms(row.best_500eq_ms) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">
+          Beste baan:
+          {% if best_track_summary %}
+            {{ best_track_summary.name }}
+            (<span class="{% if best_track_summary.delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+              {% if best_track_summary.delta_ms > 0 %}+{% endif %}{{ fmt_ms(best_track_summary.delta_ms) }}
+            </span> t.o.v. gemiddelde)
+          {% else %}
+            -
+          {% endif %}
+        </p>
+        <p class="muted">
+          Slechtste baan:
+          {% if worst_track_summary %}
+            {{ worst_track_summary.name }}
+            (<span class="{% if worst_track_summary.delta_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+              {% if worst_track_summary.delta_ms > 0 %}+{% endif %}{{ fmt_ms(worst_track_summary.delta_ms) }}
+            </span> t.o.v. gemiddelde)
+          {% else %}
+            -
+          {% endif %}
+        </p>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Progressie Statistieken</h2>
+    {% if progress_rows|length == 0 %}
+      <p>Geen progressiedata beschikbaar.</p>
+    {% else %}
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Afstand</th>
+              <th>Eerste rit</th>
+              <th>Laatste rit</th>
+              <th>Verbetering</th>
+              <th>Gem. laatste 5</th>
+              <th>Seizoensgem.</th>
+              <th>Ontwikkeling</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in progress_rows %}
+              <tr>
+                <td class="mono">{{ row.distance_m }}m</td>
+                <td class="mono"><a href="/races/{{ row.first_race_id }}">{{ fmt_ms(row.first_ms) }}</a></td>
+                <td class="mono"><a href="/races/{{ row.latest_race_id }}">{{ fmt_ms(row.latest_ms) }}</a></td>
+                <td class="mono">
+                  <span class="{% if row.improvement_ms <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+                    {% if row.improvement_ms > 0 %}+{% endif %}{{ fmt_ms(row.improvement_ms) }}
+                  </span>
+                </td>
+                <td class="mono">{{ fmt_ms(row.last5_avg_ms) if row.last5_avg_ms is not none else "-" }}</td>
+                <td class="mono">{{ fmt_ms(row.season_avg_ms) if row.season_avg_ms is not none else "-" }}</td>
+                <td>
+                  <span class="{% if row.trend == 'verbeterend' %}delta-good{% elif row.trend == 'verslechterend' %}delta-bad{% endif %}">
+                    {{ row.trend }}
+                  </span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Tijden Per Afstand</h2>
+    {% if distance_overview_rows|length == 0 %}
+      <p>Geen data beschikbaar voor deze filters.</p>
+    {% else %}
+      <div class="trend-list">
+        {% for row in distance_overview_rows %}
+          <div class="trend-item">
+            <h3 class="mono stats-distance-heading">{{ row.distance_m }}m</h3>
+            <table>
+              <tbody>
+                <tr>
+                  <th>PB</th>
+                  <td class="mono"><a href="/races/{{ row.pb_race_id }}">{{ fmt_ms(row.pb_ms) }}</a></td>
+                </tr>
+                <tr>
+                  <th>Seizoensbeste{% if sb_reference_season %} ({{ sb_reference_season }}){% endif %}</th>
+                  <td class="mono">
+                    {% if row.season_best_ms is not none and row.season_best_race_id is not none %}
+                      <a href="/races/{{ row.season_best_race_id }}">{{ fmt_ms(row.season_best_ms) }}</a>
+                    {% else %}
+                      -
+                    {% endif %}
+                  </td>
+                </tr>
+                <tr>
+                  <th>Gemiddelde</th>
+                  <td class="mono">{{ fmt_ms(row.average_ms) }}</td>
+                </tr>
+                <tr>
+                  <th>Mediaan</th>
+                  <td class="mono">{{ fmt_ms(row.median_ms) }}</td>
+                </tr>
+                {% if row.distance_m not in [100, 300] %}
+                  <tr>
+                    <th>Gemiddelde opening</th>
+                    <td class="mono">{{ fmt_sec(row.avg_opening_s) }}</td>
+                  </tr>
+                  <tr>
+                    <th>Beste opening</th>
+                    <td class="mono">
+                      {% if row.best_opening_s is not none and row.best_opening_race_id is not none %}
+                        <a href="/races/{{ row.best_opening_race_id }}">{{ fmt_sec(row.best_opening_s) }}</a>
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Gemiddelde ronde</th>
+                    <td class="mono">{{ fmt_sec(row.avg_lap_s) }}</td>
+                  </tr>
+                  <tr>
+                    <th>Beste ronde</th>
+                    <td class="mono">
+                      {% if row.best_lap_s is not none and row.best_lap_race_id is not none %}
+                        <a href="/races/{{ row.best_lap_race_id }}">{{ fmt_sec(row.best_lap_s) }}</a>
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Gem verval</th>
+                    <td class="mono">
+                      {% if row.avg_fade_s is none %}
+                        -
+                      {% else %}
+                        <span class="{% if row.avg_fade_s <= 0 %}delta-good{% else %}delta-bad{% endif %}">
+                          {% if row.avg_fade_s > 0 %}+{% endif %}{{ fmt_sec(row.avg_fade_s) }}
+                        </span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endif %}
+              </tbody>
+            </table>
+            {% if row.distance_m not in [100, 300] and row.lap_averages %}
+              <details class="stats-lap-details">
+                <summary class="stats-lap-summary">
+                  <span>Rondetijden</span>
+                  <span class="stats-lap-caret" aria-hidden="true">+</span>
+                </summary>
+                <div class="stats-lap-body">
+                  <table>
+                    <tbody>
+                      {% for lap_row in row.lap_averages %}
+                        <tr>
+                          <th>Gem ronde {{ lap_row.lap_no }}</th>
+                          <td class="mono">{{ fmt_sec(lap_row.avg_s) }}</td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </section>
+
+</div>

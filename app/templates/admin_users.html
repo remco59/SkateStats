@@ -138,7 +138,7 @@
     </div>
   </section>
   <script>
-    (function () {
+    document.addEventListener("DOMContentLoaded", () => {
       const searchInput = document.getElementById("admin-user-search");
       if (!searchInput) {
         return;
@@ -201,7 +201,7 @@
           dialog.close();
         }
       });
-    })();
+    });
   </script>
 
   <dialog class="dialog-backdrop" id="admin-delete-account-dialog">

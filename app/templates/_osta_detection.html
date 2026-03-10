@@ -1,0 +1,58 @@
+<div id="osta-detection-root">
+  {% if osta_detection.auto_import_summary and (osta_detection.auto_import_summary.imported_competitions > 0 or osta_detection.auto_import_summary.imported_races > 0) %}
+    <section class="card">
+      <div class="message message-success">
+        OSTA automatisch geimporteerd:
+        {{ osta_detection.auto_import_summary.imported_competitions }} wedstrijden en
+        {{ osta_detection.auto_import_summary.imported_races }} ritten toegevoegd.
+      </div>
+    </section>
+  {% endif %}
+
+  {% if osta_detection.error_message %}
+    <section class="card">
+      <div class="message message-warning">{{ osta_detection.error_message }}</div>
+    </section>
+  {% endif %}
+
+  {% if osta_detection.available|length > 0 %}
+    <dialog class="dialog-backdrop dialog-warning-subtle dialog-wide" id="osta-update-dialog">
+      <div class="dialog-content osta-update-dialog-content">
+        <h2>Nieuwe OSTA-data beschikbaar</h2>
+        <p class="muted">Voor {{ osta_detection.search_name }} (seizoen {{ osta_detection.season }}) zijn {{ osta_detection.available|length }} nieuwe competities gevonden.</p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Wedstrijd</th><th>Datum</th><th>Ritten</th><th>Actie</th></tr>
+            </thead>
+            <tbody>
+              {% for item in osta_detection.available %}
+                <tr>
+                  <td>{{ item.name }}</td>
+                  <td class="mono date-nowrap">{{ fmt_date(item.date) }}</td>
+                  <td class="mono">{{ item.race_count }}</td>
+                  <td>
+                    <form method="post" action="/osta/detection/ignore" class="inline-form">
+                      <input type="hidden" name="comp_signature" value="{{ item.signature }}" />
+                      <input type="hidden" name="comp_name" value="{{ item.name }}" />
+                      <input type="hidden" name="comp_date" value="{{ item.date }}" />
+                      <input type="hidden" name="pid" value="{{ item.pid }}" />
+                      <input type="hidden" name="race_count" value="{{ item.race_count }}" />
+                      <button type="submit" class="btn-secondary">Negeer</button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="row-actions" style="margin-top:10px;">
+          <form method="post" action="/osta/detection/import" class="inline-form">
+            <button type="submit">Importeer alles</button>
+          </form>
+          <button type="button" class="btn-secondary" id="osta-update-later">Later</button>
+        </div>
+      </div>
+    </dialog>
+  {% endif %}
+</div>
